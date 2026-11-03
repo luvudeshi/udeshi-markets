@@ -67,6 +67,11 @@ def participant(simulation: Simulation, pid: int) -> ScriptedParticipant:
     return found
 
 
+def state_of(simulation: Simulation) -> SimulationState:
+    """Reads the state through a call so the type checker does not narrow it across actions."""
+    return simulation.state
+
+
 SPEC_EXAMPLE = scripted(
     (1, [ScriptedOrder(1 * SECOND, sell(101, 10))]),
     (2, [ScriptedOrder(2 * SECOND, sell(102, 5))]),
@@ -79,28 +84,28 @@ SPEC_EXAMPLE = scripted(
 
 def test_lifecycle_transitions() -> None:
     simulation = Simulation(config())
-    assert simulation.state is SimulationState.CREATED
+    assert state_of(simulation) is SimulationState.CREATED
     for invalid in (simulation.pause, simulation.resume, simulation.stop):
         with pytest.raises(SimulationStateError):
             invalid()
     with pytest.raises(SimulationStateError):
         simulation.step()
     simulation.start()
-    assert simulation.state is SimulationState.RUNNING
+    assert state_of(simulation) is SimulationState.RUNNING
     with pytest.raises(SimulationStateError):
         simulation.start()
     simulation.pause()
-    assert simulation.state is SimulationState.PAUSED
+    assert state_of(simulation) is SimulationState.PAUSED
     with pytest.raises(SimulationStateError):
         simulation.pause()
     simulation.resume()
     simulation.stop()
-    assert simulation.state is SimulationState.STOPPED
+    assert state_of(simulation) is SimulationState.STOPPED
     for invalid in (simulation.start, simulation.resume, simulation.stop):
         with pytest.raises(SimulationStateError):
             invalid()
     simulation.reset()
-    assert simulation.state is SimulationState.CREATED
+    assert state_of(simulation) is SimulationState.CREATED
 
 
 def test_headless_run_completes_at_the_configured_duration() -> None:
@@ -306,7 +311,7 @@ def test_step_processes_one_event_at_a_time() -> None:
     assert simulation.exchange.best_ask(0) == 101
     simulation.pause()
     assert simulation.step(10) == 4  # Stepping works while paused; then the queue is empty...
-    assert simulation.state is SimulationState.COMPLETED  # ...so the run completes.
+    assert state_of(simulation) is SimulationState.COMPLETED  # ...so the run completes.
     assert simulation.now == 10 * SECOND
 
 
@@ -315,12 +320,12 @@ def test_run_until_advances_the_clock_even_without_events() -> None:
     simulation.start()
     assert simulation.run_until(4 * SECOND) == 0
     assert simulation.now == 4 * SECOND
-    assert simulation.state is SimulationState.RUNNING
+    assert state_of(simulation) is SimulationState.RUNNING
     with pytest.raises(ValueError, match="backwards"):
         simulation.run_until(SECOND)
     simulation.run_until(100 * SECOND)  # Capped at the end time.
     assert simulation.now == 10 * SECOND
-    assert simulation.state is SimulationState.COMPLETED
+    assert state_of(simulation) is SimulationState.COMPLETED
 
 
 def test_run_until_respects_max_events() -> None:
@@ -361,7 +366,7 @@ def test_reset_rebuilds_everything_with_fresh_participants() -> None:
     simulation = Simulation(config(), SPEC_EXAMPLE)
     first = simulation.run()
     simulation.reset()
-    assert simulation.state is SimulationState.CREATED
+    assert state_of(simulation) is SimulationState.CREATED
     assert simulation.now == 0
     assert simulation.exchange.resting_order_count(0) == 0
     assert participant(simulation, 3).reports == []
