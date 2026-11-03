@@ -11,6 +11,18 @@ members = [
     "udeshi-api",
     "udeshi-markets",
 ]
+build-constraints = [
+    { name = "cmake", specifier = "==4.4.4" },
+    { name = "hatchling", specifier = "==1.33.0" },
+    { name = "ninja", specifier = "==1.13.2" },
+    { name = "packaging", specifier = "==26.3" },
+    { name = "pathspec", specifier = "==1.1.1" },
+    { name = "pluggy", specifier = "==1.7.0" },
+    { name = "pybind11", specifier = "==3.1.0" },
+    { name = "scikit-build-core", specifier = "==1.1.2" },
+    { name = "tomlkit", specifier = "==0.15.2" },
+    { name = "trove-classifiers", specifier = "==2026.9.21.13" },
+]
 
 [[package]]
 name = "annotated-doc"
