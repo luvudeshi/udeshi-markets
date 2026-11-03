@@ -8,8 +8,9 @@ repository, rebuilds with ASan/UBSan, and runs the GoogleTest suite. A mutant is
 build fails, any test fails, or a sanitizer fires. A surviving mutant means the test suite
 cannot tell the buggy engine from the real one, i.e. a missing test.
 
-Usage: tools/mutation_test.py [--jobs N] [--work-dir DIR] [--only SUBSTRING]
-Exit status is non-zero if any mutant survives or a mutant no longer applies.
+Usage: tools/mutation_test.py [--jobs N] [--work-dir DIR] [--only SUBSTRING ...]
+Exit status is non-zero if any mutant survives, no longer applies, or fails to compile for a
+reason other than a failing static_assert (compile-time tests count as kills).
 """
 from __future__ import annotations
 
@@ -137,7 +138,8 @@ MUTANTS = [
       (ME, "SubmitResult MatchingEngine::submit(const OrderRequest& request) noexcept {",
            "SubmitResult MatchingEngine::submit(const OrderRequest& request) {"),
       (MEH, "SubmitResult submit(const OrderRequest& request) noexcept;", "SubmitResult submit(const OrderRequest& request);")),
-    m("add_instrument skips symbol rollback", (EX, "      symbol_index_.erase(symbol_slot);\n", "")),
+    m("add_instrument skips symbol rollback", (EX,
+      "      symbol_index_.erase(symbol_slot);\n", "      static_cast<void>(symbol_slot);\n")),
     m("released pool nodes not poisoned", (POOL, "    UDESHI_POISON(order, sizeof(Order));\n", "")),
     m("const level exposes mutable order", (PL,
       "[[nodiscard]] const Order* front() const noexcept { return head_; }",
@@ -147,7 +149,8 @@ MUTANTS = [
     m("ring buffer ignores wrap position", (EX, "ring.trades[(ring.oldest + i) % stored]", "ring.trades[i]")),
     m("recent trades never wrap", (EX, "    ring.oldest = (ring.oldest + 1) % recent_trade_capacity_;\n", "")),
     m("tick tolerance relative to magnitude", (EX,
-      "kTickGridRelativeTolerance * std::max(1.0, ticks)", "1e-6 * std::max(1.0, ticks)")),
+      "constexpr double kTickGridRelativeTolerance = 16.0 * std::numeric_limits<double>::epsilon();",
+      "constexpr double kTickGridRelativeTolerance = 1e-6;")),
     m("negative prices converted", (EX, "if (!(ticks > -0.5 &&", "if (!(ticks > -1e18 &&")),
     m("symbols may start with punctuation", (EX, "      !is_ascii_upper_or_digit(symbol.front())) {", "      false) {")),
     m("symbol check uses locale",
@@ -192,7 +195,12 @@ def evaluate(work: pathlib.Path, mutant: Mutant) -> tuple[str, str]:
             path.write_text(text.replace(old, new))
         build = run(["cmake", "--build", "--preset", "asan"], work)
         if build.returncode != 0:
-            return "KILLED", "compile error (static check)"
+            # Only a failing compile-time test counts as a kill. Any other compile error (e.g. an
+            # unused variable under -Werror) means the mutant itself is malformed.
+            if "static assert" in build.stdout + build.stderr:
+                return "KILLED", "static_assert"
+            return "INVALID", "mutant does not compile: " + next(
+                (line.strip() for line in build.stdout.splitlines() if "error:" in line), "?")
         try:
             test = run([TEST_BINARY, "--gtest_brief=1", "--gtest_fail_fast"], work, timeout=600)
             output, code = test.stdout + test.stderr, test.returncode
@@ -215,10 +223,12 @@ def main() -> int:
     parser.add_argument("--jobs", type=int, default=4, help="parallel work copies (default 4)")
     parser.add_argument("--work-dir", type=pathlib.Path,
                         default=pathlib.Path(tempfile.gettempdir()) / "udeshi-mutation")
-    parser.add_argument("--only", default="", help="run only mutants whose name contains this")
+    parser.add_argument("--only", action="append", default=[],
+                        help="run only mutants whose name contains this (repeatable)")
     args = parser.parse_args()
 
-    mutants = [mutant for mutant in MUTANTS if args.only in mutant.name]
+    mutants = [mutant for mutant in MUTANTS
+               if not args.only or any(part in mutant.name for part in args.only)]
     jobs = max(1, min(args.jobs, len(mutants)))
     works = [args.work_dir / f"copy{i}" for i in range(jobs)]
     print(f"Preparing {jobs} work copies under {args.work_dir} ...", flush=True)
@@ -238,12 +248,12 @@ def main() -> int:
         list(pool.map(worker, range(jobs)))
 
     survived = [name for name, (status, _) in results.items() if status == "SURVIVED"]
-    stale = [name for name, (status, _) in results.items() if status == "STALE"]
-    killed = len(mutants) - len(survived) - len(stale)
+    broken = [name for name, (status, _) in results.items() if status in ("STALE", "INVALID")]
+    killed = len(mutants) - len(survived) - len(broken)
     print(f"\n{killed}/{len(mutants)} mutants killed", end="")
     print(f"; survived: {survived}" if survived else "", end="")
-    print(f"; stale patterns: {stale}" if stale else "")
-    return 1 if survived or stale else 0
+    print(f"; stale or invalid mutants: {broken}" if broken else "")
+    return 1 if survived or broken else 0
 
 
 if __name__ == "__main__":

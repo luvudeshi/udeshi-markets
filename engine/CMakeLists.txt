@@ -13,6 +13,5 @@ target_link_libraries(udeshi_engine PRIVATE udeshi_compile_options)
 set_target_properties(udeshi_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(UDESHI_BUILD_TESTS)
-  enable_testing()
   add_subdirectory(tests)
 endif()

@@ -34,4 +34,10 @@ if(UDESHI_SANITIZE)
   target_link_options(udeshi_compile_options INTERFACE -fsanitize=address,undefined)
 endif()
 
+# Must be called in the top-level directory so that `ctest` run from the build root finds
+# tests registered in subdirectories.
+if(UDESHI_BUILD_TESTS)
+  enable_testing()
+endif()
+
 add_subdirectory(engine)

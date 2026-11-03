@@ -20,17 +20,22 @@ simulation, API and frontend are under construction; see the
   - intrusive doubly linked FIFO queues per level;
   - a slab allocator for orders;
   - an id index for cancels.
-- **Deterministic.** Global sequence numbers and simulated timestamps; identical input gives
-  identical trades and books.
+- **Deterministic.**
+  - A global sequence number on every event.
+  - Simulated (not wall-clock) timestamps.
+  - Integer-only matching and `-ffp-contract=off`.
+  - Identical input gives bit-identical output on every platform.
 - **Tested adversarially:**
-  - scenario tests;
+  - scenario and exact-contract tests;
   - a structural invariant checker;
-  - differential testing against an independent naive oracle over about 190k randomized
-    operations;
-  - economic invariants (limit respect, conservation of shares and cash);
-  - deterministic replay;
-  - ASan/UBSan;
-  - mutation testing (20/20 injected bugs caught).
+  - differential testing against an independent naive model over about 250k randomized
+    operations (multi-instrument, malformed input, books of 10k+ orders), with full-book
+    comparison after every operation;
+  - quantity-conservation and limit-price properties;
+  - golden cross-platform determinism digests;
+  - allocation-failure injection;
+  - ASan/UBSan with pool poisoning;
+  - mutation testing (49/49 injected bugs caught).
 
 ```
 Sell 10 @ 101, Sell 5 @ 102, then Buy 12 @ 102
@@ -64,7 +69,7 @@ ctest --preset release
 Presets: `debug`, `release`, `asan` (Debug + AddressSanitizer + UndefinedBehaviorSanitizer).
 
 ```bash
-python3 tools/mutation_test.py   # optional: verify the test suite catches injected bugs
+python3 tools/mutation_test.py --jobs 4   # optional: check the suite catches 49 injected bugs
 ```
 
 ## Repository layout

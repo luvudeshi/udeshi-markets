@@ -129,27 +129,35 @@ Owner `0` (`kAnonymousTrader`) has no identity, so STP never applies to it.
 
 ## Identifiers, sequencing, and determinism
 
-* One global `Sequence` counter covers all instruments. Each `submit` or `cancel` call consumes
-  one sequence number, including rejected submissions and failed cancels, because they are
-  events too. Each trade consumes one more, in execution order. Event order is therefore a total
-  order: a submission's sequence precedes the sequences of the trades it causes.
-* `OrderId`s are dense (1, 2, 3, …) and assigned only to accepted orders. `TradeId`s are dense
-  as well.
+* One global `Sequence` counter covers all instruments. Each of the following consumes exactly
+  one sequence number, in the order it happens:
+  * every `submit` and `cancel` call, including rejected submissions and failed cancels, because
+    they are events too;
+  * every trade;
+  * every resting order removed by self-trade prevention.
+
+  The events caused by one submission follow its own sequence number contiguously. Merging
+  `SubmitResult::trades` and `SubmitResult::resting_cancels` by `sequence` therefore reproduces
+  the exact interleaving, and a consumer can detect a lost event from a gap.
+* `OrderId`s are dense (1, 2, 3, …) and global across instruments, and only accepted orders
+  get one. `TradeId`s are dense and global as well.
 * `Timestamp` is caller-supplied **simulated** time in nanoseconds. It is recorded on orders and
-  trades but never used for priority, so wall-clock time cannot affect results.
+  trades but never used for priority. Orders submitted with decreasing timestamps still queue in
+  arrival order.
 * Nothing on the matching path depends on wall-clock time, randomness, pointer addresses, or
   iteration order of an unordered container. The order-id index is only used for point lookups.
-  Replaying the same call sequence produces identical ids, trades, and books; the
-  `DeterministicReplay` tests check this.
+  First-party code is compiled with `-ffp-contract=off`, so floating-point results cannot differ
+  between targets that do and don't have fused multiply-add.
 
 ## Validation and errors
 
-Bad input on the hot path never throws. `submit` returns `OrderStatus::Rejected` with a
-`RejectReason`:
+Bad input never throws. `submit` returns `OrderStatus::Rejected` and reports the **first**
+failing check, in this order:
 
 | Reason | Condition |
 | --- | --- |
 | `UnknownInstrument` | No book with that id. |
+| `InvalidSide` / `InvalidOrderType` / `InvalidTimeInForce` / `InvalidSelfTradePrevention` | An enum field holds a value outside its declared enumerators. This can happen when an integer crosses a language boundary, for example from Python. The engine rejects it rather than silently reinterpreting it. |
 | `InvalidQuantity` | `quantity ≤ 0` or `> kMaxOrderQuantity`. |
 | `InvalidPrice` | Limit order with `price ≤ 0` or `> kMaxPrice`. |
 | `MarketOrderWithPrice` | Market order with non-zero price (ambiguous intent). |
@@ -166,19 +174,50 @@ filled_quantity + resting_quantity + cancelled_quantity = requested_quantity
 filled_quantity = Σ trade.quantity over SubmitResult::trades
 ```
 
+### Failure model
+
+`submit` and `cancel` are `noexcept`. The only thing that can fail inside them is memory
+allocation (growing the result vectors or inserting a resting order), and that can happen
+*after* the book has been modified. If an exception escaped at that point, executed fills would
+go unreported and the caller's view would silently diverge from the book. Instead the process
+terminates (fail-fast), and a test injects an allocation failure mid-match to check this.
+
+Operations that can be made atomic are atomic:
+* `OrderBook::insert` and `OrderPool` growth give the strong exception guarantee.
+* `Exchange::add_instrument` registers with the engine last and rolls back its own earlier
+  steps on failure. The engine and the exchange can therefore never disagree about which
+  instruments exist. A fault-injection test fails every allocation inside these operations in
+  turn and checks this.
+
 ## Market data (`Exchange`)
 
 The `Exchange` derives every price-related number from executed trades or from the live book.
 Nothing can set a price directly.
 
-* `last`, `open`, `high`, `low`, `volume`, `trade_count`: updated from each trade.
-* `notional = Σ price·quantity` (in ticks, accumulated as a `double`); `VWAP = notional / volume`.
+* `last`, `open`, `high`, `low`, `trade_count`: updated from each trade.
+* `volume`: cumulative traded quantity. It **saturates** at `INT64_MAX` instead of overflowing.
+  Per-order bounds limit each trade but not the running total.
+* `notional = Σ price·quantity` in ticks, and `VWAP = notional / volume`. Each product is
+  computed exactly in `int64` (at most 10¹⁸) and then added as a `double`. There is no
+  floating-point multiply for a compiler to fuse, so the value is bit-identical on every
+  platform. A test pins an exact value whose products exceed 2⁵³.
 * `best_bid`, `best_ask`; `midprice = (bid + ask) / 2` and `spread = ask − bid`, both undefined
   unless both sides are present. These are returned as `std::optional`, never as a sentinel
   value.
 * `current_price()` = last trade price, falling back to the instrument's reference price before
   the first trade.
-* A bounded ring buffer of recent trades per instrument.
+* Recent trades per instrument are kept in a fixed-capacity ring buffer. It grows to capacity
+  once and then overwrites the oldest entry, so steady-state recording never allocates.
+
+**Tick conversion.**
+* `to_ticks` accepts a non-negative currency price only if it lies on the tick grid, allowing
+  for floating-point rounding error: a relative tolerance of 16 machine epsilons, about 3.6e‑6
+  of a tick at `kMaxPrice`.
+* Off-grid prices are rejected, never rounded. Rounding could turn a buy limit of 12345.678 into
+  12345.68, more aggressive than the price the caller stated.
+
+**Symbols** are 1–16 ASCII characters from `A–Z 0–9 . -`, starting with a letter or digit. They
+are checked without `<cctype>`, whose classification depends on the process locale.
 
 The exchange deliberately does **not** know an asset's fundamental value. A real venue cannot
 observe it; it belongs to the market-environment layer (Phase 3).
@@ -186,37 +225,73 @@ observe it; it belongs to the market-environment layer (Phase 3).
 ## Testing
 
 The suite lives in [`engine/tests`](../engine/tests) and runs under Debug, Release and
-ASan/UBSan in CI. It has four parts.
+ASan/UBSan on Linux (GCC, libstdc++) and macOS (Clang, libc++) in CI.
 
-1. **Scenario tests** for every rule above: price priority, FIFO, partial and full fills,
-   multi-level sweeps, market and IOC remainders, cancellation edge cases, validation
-   boundaries, STP modes, and instrument isolation.
+1. **Scenario and contract tests**
+   ([`test_matching_engine.cpp`](../engine/tests/test_matching_engine.cpp),
+   [`test_engine_contract.cpp`](../engine/tests/test_engine_contract.cpp)) check every rule
+   above with hand-computed values:
+   * price priority, FIFO, and arrival order winning over timestamps;
+   * partial and full fills, multi-level and 5,000-level sweeps, boundary prices `1` and
+     `kMaxPrice`;
+   * market and IOC remainders, every status and cancel reason, every STP mode;
+   * exact sequence and id values, validation order, and multi-instrument id density.
 2. **Structural invariants.** `OrderBook::check_invariants()` checks:
    * cached level totals and counts are correct;
    * list links and level back-pointers are consistent;
    * sequences strictly increase within each level;
    * the index and the pool agree with the book;
    * the book is never crossed or locked.
-3. **Differential testing.** [`reference_book.hpp`](../engine/tests/reference_book.hpp) is a
-   deliberately naive oracle: a flat vector and a linear best-order scan, sharing no code with the
-   engine. 36 seeded random streams (about 190k operations) mix limit, market and IOC orders,
-   cancels of live and stale ids, all STP modes, and invalid input, at three price-dispersion
-   regimes. After every operation each trade, each outcome and each STP cancel must match the
-   oracle exactly. The full L3 book (every resting order, in priority order) is compared every 64
-   operations and at the end.
-4. **Economic properties**, checked on every trade of those streams:
-   * no execution worse than either side's limit;
-   * the execution price equals the resting order's limit;
-   * no order fills more than its quantity;
-   * cancelled or finished orders never trade again;
-   * shares and cash summed over all participants stay exactly zero (conservation);
-   * trade ids and sequences strictly increase.
+3. **Differential testing.** [`reference_engine.hpp`](../engine/tests/reference_engine.hpp) is
+   a deliberately naive model of the documented contract.
+   * It shares no code with the engine: flat vectors, linear best-order scans, its own id and
+     sequence counters, and its own validation of raw enum values.
+   * 39 seeded streams (about 250k operations) run across four regimes: narrow, moderate, wide,
+     and a deep book of 5k–10k resting orders spanning several pool chunks.
+   * They mix limit, market and IOC orders, all STP modes, non-monotone timestamps, cancels of
+     live, stale, unknown and wrong-instrument ids, and malformed input.
+   * After **every** operation, every field of every result and the full L3 book (owner,
+     sequence, original quantity, timestamp) must equal the model. L2 aggregates and the
+     structural invariants are checked at the same time. Coverage floors fail the test if the
+     generator stops reaching the interesting paths.
+4. **Contract properties checked directly**, independently of the model, so that a bug the
+   model happened to share would still be caught:
+   * sequence numbers are contiguous, and order and trade ids are dense;
+   * no execution is worse than either side's limit, and every execution is at the resting
+     order's price;
+   * **quantity conservation:**
+     * for every order, `filled + cancelled + still resting = submitted`;
+     * on each instrument and side, resting volume equals what was rested, minus fills against
+       it, minus cancels;
+   * a finished order never trades again, and the book holds an order exactly when the engine
+     reported it as resting.
+5. **Determinism.** Golden FNV‑1a digests of every output and the final books for fixed streams
+   are checked in. They must match on every platform, and are computed with two engines alive
+   at once, so that pointer-dependent behaviour would show up.
+6. **Fault injection and memory safety.**
+   * A replacement `operator new` fails each allocation in turn to test the exception
+     guarantees above.
+   * `OrderPool` poisons released nodes under ASan, so reading through a stale `Order*` is
+     reported like a heap use-after-free. A death test checks this.
 
-**Mutation testing.** [`tools/mutation_test.py`](../tools/mutation_test.py) injects 20 realistic
-bugs, including off-by-one crossing checks, LIFO instead of FIFO, trading at the aggressor's
-price, and broken level cleanup. It rebuilds each mutant under sanitizers and checks that the
-suite fails. The first run exposed one surviving mutant (an untested STP cancel quantity), which
-led to a new test. The suite now kills 20/20.
+**Mutation testing.** [`tools/mutation_test.py`](../tools/mutation_test.py) applies realistic
+bugs, rebuilds each under ASan/UBSan, and requires the suite to fail. The bugs include:
+* off-by-one crossing checks, LIFO instead of FIFO, FIFO keyed on timestamp;
+* trading at the aggressor's price, reading a released order;
+* sequence gaps, per-instrument ids, wrong cancel reasons or sides;
+* a missing rollback, unpoisoned pool nodes, locale-dependent symbol checks.
+
+A compile failure counts as a kill only if a `static_assert` fires, since some properties
+(deep-const accessors, saturating arithmetic) are tested at compile time. Any other build
+failure marks the mutant itself as invalid.
+
+**Current result: 49/49 killed.** The history behind that number:
+* The first version of the suite, with 20 mutants, missed one: an untested STP cancel
+  quantity.
+* An independent adversarial review then built about 15 more mutants that the suite of the time
+  missed. They included sequence-number gaps, per-instrument id counters, timestamp-keyed FIFO,
+  wrong cancel reasons, and use of a released pool node.
+* Each one led to a new test, and all are now in the mutant list.
 
 ## Known limitations
 
@@ -224,7 +299,12 @@ led to a new test. The suite now kills 20/20.
   independent.
 * Only limit (GTC/IOC) and market orders. There are no stop, iceberg, post-only or fill-or-kill
   orders, and no order modification (cancel and replace instead).
+* `cancel` does not check ownership, and `Trade` carries both participants' ids. The Phase 2
+  gateway must enforce that agents cancel only their own orders and must publish an anonymized
+  public tape.
+* `to_currency` returns a binary `double`. For example, 3 ticks of 0.05 is
+  `0.15000000000000002`, so canonical decimal formatting is left to the presentation layer.
 * `std::map` levels and the `unordered_map` index allocate nodes. Phase 6 benchmarks will decide
   whether a flat price-indexed ladder or an open-addressing index is worth the complexity.
-* `Exchange::notional` is a `double` accumulator. Its relative error is about 1e‑16, which is
-  ample for VWAP but not exact.
+* `Exchange::notional` is a `double` accumulator. Each term is exact, but the running sum has a
+  relative rounding error of about 1e‑16.
