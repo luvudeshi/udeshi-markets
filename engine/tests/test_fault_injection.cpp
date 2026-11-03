@@ -43,12 +43,32 @@ class FailNthAllocation {
 
 }  // namespace
 
+// Every non-aligned replaceable form must be replaced together. If any form were left to the
+// runtime (e.g. the nothrow new that std::stable_sort's temporary buffer uses), memory could be
+// allocated by the runtime's operator new and released by our delete, which ASan reports as an
+// alloc-dealloc mismatch. The align_val_t forms are left to the runtime as a consistent pair.
 void* operator new(std::size_t size) { return allocate_or_fail(size); }
 void* operator new[](std::size_t size) { return allocate_or_fail(size); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+  try {
+    return allocate_or_fail(size);
+  } catch (const std::bad_alloc&) {
+    return nullptr;
+  }
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+  try {
+    return allocate_or_fail(size);
+  } catch (const std::bad_alloc&) {
+    return nullptr;
+  }
+}
 void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete(void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
+void operator delete[](void* memory, const std::nothrow_t&) noexcept { std::free(memory); }
 
 namespace udeshi {
 namespace {
