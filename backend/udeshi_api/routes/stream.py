@@ -73,7 +73,9 @@ async def stream(
                 logger.error("stream %s failed", simulation_id, exc_info=failure)
     finally:
         session.hub.unsubscribe(subscriber)
-        with contextlib.suppress(RuntimeError):  # Already closed by the client.
+        # The client may already have gone, in which case there is nothing left to close:
+        # Starlette reports that as WebSocketDisconnect (or RuntimeError if the close was sent).
+        with contextlib.suppress(RuntimeError, WebSocketDisconnect):
             await websocket.close()
 
 
