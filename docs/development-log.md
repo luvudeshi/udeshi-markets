@@ -143,6 +143,9 @@ tests; 68 findings, every one reproduced by an independent verifier before it wa
   recorder, kernel (`test_simulation.py`, plus `test_kernel_contract.py` for the review
   fixes), the README example, the API, the WebSocket stream (including a real uvicorn server
   with a real WebSocket client), the runner and the hub. Warnings are errors.
+* The binding and stub tests were checked by mutation: 16 binding mutants (fields bound to the
+  wrong member, swapped values, wrong defaults, always-true `__eq__`, a missing `kw_only`) and 9
+  stub mutants, all caught.
 * mypy `--strict` and ruff are clean.
 * CI runs the engine on Linux and macOS in debug, release and ASan+UBSan builds, plus the
   Python suite, the installed-wheel tests and the Docker image.
