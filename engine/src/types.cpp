@@ -49,6 +49,10 @@ std::string_view to_string(RejectReason value) noexcept {
   switch (value) {
     case RejectReason::None: return "None";
     case RejectReason::UnknownInstrument: return "UnknownInstrument";
+    case RejectReason::InvalidSide: return "InvalidSide";
+    case RejectReason::InvalidOrderType: return "InvalidOrderType";
+    case RejectReason::InvalidTimeInForce: return "InvalidTimeInForce";
+    case RejectReason::InvalidSelfTradePrevention: return "InvalidSelfTradePrevention";
     case RejectReason::InvalidQuantity: return "InvalidQuantity";
     case RejectReason::InvalidPrice: return "InvalidPrice";
     case RejectReason::MarketOrderWithPrice: return "MarketOrderWithPrice";

@@ -30,8 +30,10 @@ class PriceLevel {
   [[nodiscard]] Quantity total_quantity() const noexcept { return total_quantity_; }
   [[nodiscard]] std::size_t order_count() const noexcept { return order_count_; }
   [[nodiscard]] bool empty() const noexcept { return head_ == nullptr; }
-  [[nodiscard]] Order* front() const noexcept { return head_; }
-  [[nodiscard]] Order* back() const noexcept { return tail_; }
+  [[nodiscard]] const Order* front() const noexcept { return head_; }
+  [[nodiscard]] Order* front() noexcept { return head_; }
+  [[nodiscard]] const Order* back() const noexcept { return tail_; }
+  [[nodiscard]] Order* back() noexcept { return tail_; }
 
   // Appends at the tail: the newest order has the lowest time priority.
   void push_back(Order* order) noexcept {

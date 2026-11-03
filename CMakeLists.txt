@@ -19,8 +19,12 @@ option(UDESHI_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(UDESHI_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 # Applied to every first-party target (not to third-party dependencies).
+# -ffp-contract=off: never fuse a*b+c into an FMA. Whether a fused instruction exists differs
+# between targets (arm64 always, x86-64 only with -mfma), so contraction would make
+# floating-point results platform-dependent and break cross-platform reproducibility.
 add_library(udeshi_compile_options INTERFACE)
 target_compile_options(udeshi_compile_options INTERFACE
+  -ffp-contract=off
   -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
   -Wnon-virtual-dtor -Wold-style-cast -Wcast-align -Woverloaded-virtual
   $<$<BOOL:${UDESHI_WARNINGS_AS_ERRORS}>:-Werror>)

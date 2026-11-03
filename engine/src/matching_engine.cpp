@@ -39,6 +39,18 @@ RejectReason MatchingEngine::validate(const OrderRequest& request) const noexcep
   if (!has_instrument(request.instrument)) {
     return RejectReason::UnknownInstrument;
   }
+  if (!is_valid(request.side)) {
+    return RejectReason::InvalidSide;
+  }
+  if (!is_valid(request.type)) {
+    return RejectReason::InvalidOrderType;
+  }
+  if (!is_valid(request.time_in_force)) {
+    return RejectReason::InvalidTimeInForce;
+  }
+  if (!is_valid(request.self_trade_prevention)) {
+    return RejectReason::InvalidSelfTradePrevention;
+  }
   if (request.quantity <= 0 || request.quantity > kMaxOrderQuantity) {
     return RejectReason::InvalidQuantity;
   }
@@ -52,7 +64,7 @@ RejectReason MatchingEngine::validate(const OrderRequest& request) const noexcep
   return RejectReason::None;
 }
 
-SubmitResult MatchingEngine::submit(const OrderRequest& request) {
+SubmitResult MatchingEngine::submit(const OrderRequest& request) noexcept {
   SubmitResult result;
   result.sequence = next_sequence_++;
   result.requested_quantity = request.quantity;
@@ -132,10 +144,9 @@ void MatchingEngine::match(OrderBook& book, const OrderRequest& request, OrderId
           stop = true;
           break;
         }
-        result.resting_cancels.push_back(RestingCancel{resting.id, resting.owner, resting.side,
-                                                       resting.price,
-                                                       resting.remaining_quantity,
-                                                       CancelReason::SelfTradePrevention});
+        result.resting_cancels.push_back(RestingCancel{
+            resting.id, next_sequence_++, resting.owner, resting.side, resting.price,
+            resting.remaining_quantity, CancelReason::SelfTradePrevention});
         book.remove(resting);
         continue;
       }
@@ -172,7 +183,7 @@ void MatchingEngine::match(OrderBook& book, const OrderRequest& request, OrderId
   result.filled_quantity = request.quantity - remaining;
 }
 
-CancelResult MatchingEngine::cancel(InstrumentId instrument, OrderId order_id) {
+CancelResult MatchingEngine::cancel(InstrumentId instrument, OrderId order_id) noexcept {
   CancelResult result;
   result.sequence = next_sequence_++;
   result.order_id = order_id;

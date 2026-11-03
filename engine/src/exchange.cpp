@@ -1,8 +1,8 @@
 #include "udeshi/exchange.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -11,16 +11,27 @@ namespace udeshi {
 namespace {
 
 constexpr std::size_t kMaxSymbolLength = 16;
-// Relative tolerance, in ticks, when checking that a currency price lies on the tick grid.
-constexpr double kTickGridTolerance = 1e-6;
+
+// Maximum relative distance from the tick grid, measured in ticks, that is attributed to
+// floating-point rounding rather than to an off-grid price. Converting a decimal currency
+// price involves at most ~3 roundings (the decimal input, the tick size, the division), each
+// bounded by half an ulp, so 16 epsilon leaves a wide margin while staying far below one tick
+// anywhere in the valid range (3.6e-6 ticks at kMaxPrice).
+constexpr double kTickGridRelativeTolerance = 16.0 * std::numeric_limits<double>::epsilon();
+
+// Locale-independent on purpose: <cctype> classification depends on the C locale, which a
+// host process (e.g. a Python interpreter) may set to accept non-ASCII bytes.
+[[nodiscard]] constexpr bool is_ascii_upper_or_digit(char c) noexcept {
+  return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
 
 [[nodiscard]] bool is_valid_symbol(std::string_view symbol) noexcept {
-  if (symbol.empty() || symbol.size() > kMaxSymbolLength) {
+  if (symbol.empty() || symbol.size() > kMaxSymbolLength ||
+      !is_ascii_upper_or_digit(symbol.front())) {
     return false;
   }
   return std::all_of(symbol.begin(), symbol.end(), [](char c) {
-    const auto uc = static_cast<unsigned char>(c);
-    return std::isupper(uc) != 0 || std::isdigit(uc) != 0 || c == '.' || c == '-';
+    return is_ascii_upper_or_digit(c) || c == '.' || c == '-';
   });
 }
 
@@ -36,7 +47,8 @@ Exchange::Exchange(std::size_t recent_trade_capacity)
 InstrumentId Exchange::add_instrument(InstrumentSpec spec) {
   if (!is_valid_symbol(spec.symbol)) {
     throw std::invalid_argument("Exchange: invalid symbol '" + spec.symbol +
-                                "' (expected 1-16 chars of A-Z, 0-9, '.', '-')");
+                                "' (expected 1-16 chars of A-Z, 0-9, '.', '-', starting with "
+                                "A-Z or 0-9)");
   }
   if (symbol_index_.contains(spec.symbol)) {
     throw std::invalid_argument("Exchange: duplicate symbol '" + spec.symbol + "'");
@@ -48,17 +60,35 @@ InstrumentId Exchange::add_instrument(InstrumentSpec spec) {
     throw std::invalid_argument("Exchange: reference price out of range for '" + spec.symbol +
                                 "'");
   }
-
-  const InstrumentId id = engine_.add_instrument();
-  if (id != instruments_.size()) {
+  if (engine_.instrument_count() != instruments_.size()) {
     throw std::logic_error("Exchange: engine and exchange instrument ids diverged");
   }
+
+  // Commit in three steps, undoing earlier steps if a later one throws, so that the engine
+  // and the exchange can never disagree about which instruments exist. The engine goes last
+  // because it is the one step that cannot be undone.
+  const auto id = static_cast<InstrumentId>(instruments_.size());
   InstrumentState state;
   state.stats.instrument = id;
   state.stats.reference_price = spec.reference_price;
-  symbol_index_.emplace(spec.symbol, id);
   state.spec = std::move(spec);
-  instruments_.push_back(std::move(state));
+  instruments_.push_back(std::move(state));  // Strong guarantee.
+  try {
+    const auto [symbol_slot, inserted] =
+        symbol_index_.try_emplace(instruments_.back().spec.symbol, id);
+    try {
+      const InstrumentId engine_id = engine_.add_instrument();  // Strong guarantee.
+      if (engine_id != id) {
+        throw std::logic_error("Exchange: engine assigned an unexpected instrument id");
+      }
+    } catch (...) {
+      symbol_index_.erase(symbol_slot);
+      throw;
+    }
+  } catch (...) {
+    instruments_.pop_back();
+    throw;
+  }
   return id;
 }
 
@@ -85,8 +115,8 @@ const InstrumentSpec& Exchange::instrument(InstrumentId instrument) const {
 std::vector<std::string> Exchange::symbols() const {
   std::vector<std::string> result;
   result.reserve(instruments_.size());
-  for (const auto& state : instruments_) {
-    result.push_back(state.spec.symbol);
+  for (const auto& instrument_state : instruments_) {
+    result.push_back(instrument_state.spec.symbol);
   }
   return result;
 }
@@ -98,9 +128,11 @@ const Exchange::InstrumentState& Exchange::state(InstrumentId instrument) const 
   return instruments_[instrument];
 }
 
-SubmitResult Exchange::submit(const OrderRequest& request) {
+SubmitResult Exchange::submit(const OrderRequest& request) noexcept {
   SubmitResult result = engine_.submit(request);
   if (!result.trades.empty()) {
+    // The engine only produces trades for instruments it knows, and add_instrument keeps the
+    // engine's instruments identical to ours, so this index is always in range.
     InstrumentState& instrument_state = instruments_[request.instrument];
     for (const Trade& trade : result.trades) {
       record_trade(instrument_state, trade);
@@ -109,7 +141,7 @@ SubmitResult Exchange::submit(const OrderRequest& request) {
   return result;
 }
 
-CancelResult Exchange::cancel(InstrumentId instrument, OrderId order_id) {
+CancelResult Exchange::cancel(InstrumentId instrument, OrderId order_id) noexcept {
   return engine_.cancel(instrument, order_id);
 }
 
@@ -121,13 +153,21 @@ void Exchange::record_trade(InstrumentState& instrument_state, const Trade& trad
   stats.last_price = trade.price;
   stats.high_price = std::max(stats.high_price.value_or(trade.price), trade.price);
   stats.low_price = std::min(stats.low_price.value_or(trade.price), trade.price);
-  stats.volume += trade.quantity;
+  constexpr Quantity kMaxVolume = std::numeric_limits<Quantity>::max();
+  stats.volume = stats.volume > kMaxVolume - trade.quantity ? kMaxVolume
+                                                             : stats.volume + trade.quantity;
   stats.trade_count += 1;
-  stats.notional += static_cast<double>(trade.price) * static_cast<double>(trade.quantity);
+  // price * quantity <= 1e18 is exact in int64; converting the exact product (rather than
+  // multiplying two doubles) leaves no multiply-add for the compiler to fuse differently on
+  // different targets.
+  stats.notional += static_cast<double>(trade.price * trade.quantity);
 
-  instrument_state.recent_trades.push_back(trade);
-  if (instrument_state.recent_trades.size() > recent_trade_capacity_) {
-    instrument_state.recent_trades.pop_front();
+  TradeRing& ring = instrument_state.recent;
+  if (ring.trades.size() < recent_trade_capacity_) {
+    ring.trades.push_back(trade);
+  } else {
+    ring.trades[ring.oldest] = trade;
+    ring.oldest = (ring.oldest + 1) % recent_trade_capacity_;
   }
 }
 
@@ -141,9 +181,16 @@ BookSnapshot Exchange::book_snapshot(InstrumentId instrument, std::size_t max_le
 }
 
 std::vector<Trade> Exchange::recent_trades(InstrumentId instrument, std::size_t limit) const {
-  const auto& trades = state(instrument).recent_trades;
-  const std::size_t count = std::min(limit, trades.size());
-  return {trades.end() - static_cast<std::ptrdiff_t>(count), trades.end()};
+  const TradeRing& ring = state(instrument).recent;
+  const std::size_t stored = ring.trades.size();
+  const std::size_t count = std::min(limit, stored);
+  std::vector<Trade> result;
+  result.reserve(count);
+  // Oldest-first: skip the (stored - count) oldest entries, starting from the ring's head.
+  for (std::size_t i = stored - count; i < stored; ++i) {
+    result.push_back(ring.trades[(ring.oldest + i) % stored]);
+  }
+  return result;
 }
 
 std::optional<Price> Exchange::best_bid(InstrumentId instrument) const {
@@ -200,11 +247,13 @@ Price Exchange::to_ticks(InstrumentId instrument, double currency_price) const {
     throw std::invalid_argument("Exchange::to_ticks: price must be finite");
   }
   const double ticks = currency_price / tick_size;
-  if (std::fabs(ticks) > static_cast<double>(kMaxPrice)) {
+  // Range-check before rounding and casting. Allowing half a tick either side of [0, kMaxPrice]
+  // admits floating-point noise around the bounds; rounding then lands inside the range.
+  if (!(ticks > -0.5 && ticks < static_cast<double>(kMaxPrice) + 0.5)) {
     throw std::invalid_argument("Exchange::to_ticks: price out of range");
   }
   const double rounded = std::round(ticks);
-  if (std::fabs(ticks - rounded) > kTickGridTolerance * std::max(1.0, std::fabs(ticks))) {
+  if (std::fabs(ticks - rounded) > kTickGridRelativeTolerance * std::max(1.0, ticks)) {
     throw std::invalid_argument("Exchange::to_ticks: price is not a multiple of the tick size");
   }
   return static_cast<Price>(rounded);

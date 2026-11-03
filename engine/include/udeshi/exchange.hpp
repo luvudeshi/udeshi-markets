@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <deque>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -31,9 +30,11 @@ struct MarketStatistics {
   std::optional<Price> open_price;  // First executed trade price.
   std::optional<Price> high_price;
   std::optional<Price> low_price;
-  Quantity volume = 0;
+  Quantity volume = 0;  // Saturates at INT64_MAX instead of overflowing.
   std::uint64_t trade_count = 0;
-  double notional = 0.0;  // Sum of price * quantity in tick units.
+  // Sum of price * quantity in tick units. Each product is computed exactly in int64 and then
+  // added as a double, so the value is bit-identical on every platform (no FMA contraction).
+  double notional = 0.0;
   std::optional<double> vwap;  // notional / volume, in ticks.
   std::optional<Price> best_bid;
   std::optional<Price> best_ask;
@@ -59,8 +60,10 @@ class Exchange {
 
   explicit Exchange(std::size_t recent_trade_capacity = kDefaultRecentTradeCapacity);
 
-  // Registers an instrument. Throws std::invalid_argument for an empty or duplicate symbol,
-  // a non-positive / non-finite tick size, or an out-of-range reference price.
+  // Registers an instrument. Throws std::invalid_argument for an invalid or duplicate symbol
+  // (symbols are 1-16 ASCII characters from A-Z 0-9 . -, starting with A-Z or 0-9), a
+  // non-positive / non-finite tick size, or an out-of-range reference price. Strong exception
+  // guarantee: on any failure the exchange and its engine are left unchanged.
   InstrumentId add_instrument(InstrumentSpec spec);
 
   [[nodiscard]] std::size_t instrument_count() const noexcept { return instruments_.size(); }
@@ -71,8 +74,9 @@ class Exchange {
   [[nodiscard]] std::vector<std::string> symbols() const;
 
   // ---- Order entry -------------------------------------------------------------------------
-  SubmitResult submit(const OrderRequest& request);
-  CancelResult cancel(InstrumentId instrument, OrderId order_id);
+  // Same contract as MatchingEngine::submit / cancel, plus market-data recording.
+  SubmitResult submit(const OrderRequest& request) noexcept;
+  CancelResult cancel(InstrumentId instrument, OrderId order_id) noexcept;
 
   // ---- Market data (all prices in ticks) ---------------------------------------------------
   [[nodiscard]] const OrderBook& order_book(InstrumentId instrument) const;
@@ -87,17 +91,27 @@ class Exchange {
 
   // ---- Unit conversion ---------------------------------------------------------------------
   [[nodiscard]] double to_currency(InstrumentId instrument, Price ticks) const;
-  // Converts a currency price to ticks. Throws std::invalid_argument if the value is not
-  // (within floating-point tolerance) an exact multiple of the tick size.
+  // Converts a non-negative currency price to ticks. Throws std::invalid_argument if the value
+  // is not finite, is negative or above kMaxPrice ticks, or is not an exact multiple of the
+  // tick size up to floating-point rounding error (a relative error of 16 machine epsilons,
+  // i.e. about 3.6e-6 of a tick at kMaxPrice). Off-grid prices are rejected, never rounded,
+  // so a converted limit price can never be more aggressive than the price the caller stated.
   [[nodiscard]] Price to_ticks(InstrumentId instrument, double currency_price) const;
 
   [[nodiscard]] const MatchingEngine& engine() const noexcept { return engine_; }
 
  private:
+  // Fixed-capacity ring of the most recent trades. Grows until it reaches capacity, then
+  // overwrites the oldest entry, so steady-state recording never allocates.
+  struct TradeRing {
+    std::vector<Trade> trades;
+    std::size_t oldest = 0;  // Index of the oldest trade once the ring is full.
+  };
+
   struct InstrumentState {
     InstrumentSpec spec;
     MarketStatistics stats;
-    std::deque<Trade> recent_trades;
+    TradeRing recent;
   };
 
   [[nodiscard]] const InstrumentState& state(InstrumentId instrument) const;

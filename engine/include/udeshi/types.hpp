@@ -25,8 +25,11 @@ using Timestamp = std::int64_t;      // Simulated time in nanoseconds (not wall-
 inline constexpr OrderId kInvalidOrderId = 0;
 inline constexpr TraderId kAnonymousTrader = 0;
 
-// Hard bounds that keep every intermediate value (level totals, notional = price * quantity,
-// cumulative volume) far away from int64 overflow. 1e9 * 1e9 = 1e18 < 9.22e18.
+// Per-order bounds. They guarantee that the notional of any single order or trade
+// (price * quantity <= 1e18 < 2^63 ~ 9.22e18) is exactly representable as int64, and that the
+// cached quantity of a price level cannot overflow before memory is exhausted (it would take
+// more than 9e9 resting orders). They do NOT bound cumulative counters such as total traded
+// volume; those are handled explicitly where they are accumulated (see Exchange).
 inline constexpr Quantity kMaxOrderQuantity = 1'000'000'000;
 inline constexpr Price kMaxPrice = 1'000'000'000;
 
@@ -58,9 +61,14 @@ enum class OrderStatus : std::uint8_t {
   Cancelled,        // Remainder cancelled (market / IOC / self-trade prevention); filled may be > 0.
 };
 
+// Validation is applied in exactly this order; the first failing check is reported.
 enum class RejectReason : std::uint8_t {
   None,
   UnknownInstrument,
+  InvalidSide,                 // Enum value outside {Buy, Sell}.
+  InvalidOrderType,            // Enum value outside {Limit, Market}.
+  InvalidTimeInForce,          // Enum value outside {GoodTillCancel, ImmediateOrCancel}.
+  InvalidSelfTradePrevention,  // Enum value outside the declared modes.
   InvalidQuantity,
   InvalidPrice,
   MarketOrderWithPrice,
@@ -81,6 +89,23 @@ enum class CancelOutcome : std::uint8_t {
 
 [[nodiscard]] constexpr Side opposite(Side side) noexcept {
   return side == Side::Buy ? Side::Sell : Side::Buy;
+}
+
+// Enum fields can carry out-of-range values when they cross a language or serialisation
+// boundary (e.g. an integer converted to an enum by Python bindings). These predicates let the
+// engine reject such input instead of silently reinterpreting it.
+[[nodiscard]] constexpr bool is_valid(Side value) noexcept {
+  return value == Side::Buy || value == Side::Sell;
+}
+[[nodiscard]] constexpr bool is_valid(OrderType value) noexcept {
+  return value == OrderType::Limit || value == OrderType::Market;
+}
+[[nodiscard]] constexpr bool is_valid(TimeInForce value) noexcept {
+  return value == TimeInForce::GoodTillCancel || value == TimeInForce::ImmediateOrCancel;
+}
+[[nodiscard]] constexpr bool is_valid(SelfTradePrevention value) noexcept {
+  return value == SelfTradePrevention::Allow || value == SelfTradePrevention::CancelResting ||
+         value == SelfTradePrevention::CancelIncoming;
 }
 
 [[nodiscard]] std::string_view to_string(Side value) noexcept;

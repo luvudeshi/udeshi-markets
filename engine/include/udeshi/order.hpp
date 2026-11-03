@@ -44,9 +44,14 @@ struct Order {
   PriceLevel* level_ = nullptr;  // The level this order rests in; null when not resting.
 
  public:
-  [[nodiscard]] Order* next() const noexcept { return next_; }
-  [[nodiscard]] Order* prev() const noexcept { return prev_; }
-  [[nodiscard]] PriceLevel* level() const noexcept { return level_; }
+  // Deep-const navigation: a const Order only yields const neighbours, so read-only views of
+  // the book (OrderBook::find, BookSide iteration) cannot be used to mutate it.
+  [[nodiscard]] const Order* next() const noexcept { return next_; }
+  [[nodiscard]] Order* next() noexcept { return next_; }
+  [[nodiscard]] const Order* prev() const noexcept { return prev_; }
+  [[nodiscard]] Order* prev() noexcept { return prev_; }
+  [[nodiscard]] const PriceLevel* level() const noexcept { return level_; }
+  [[nodiscard]] PriceLevel* level() noexcept { return level_; }
   [[nodiscard]] Quantity filled_quantity() const noexcept {
     return original_quantity - remaining_quantity;
   }

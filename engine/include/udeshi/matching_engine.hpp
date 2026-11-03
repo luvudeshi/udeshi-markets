@@ -15,6 +15,7 @@ namespace udeshi {
 // (currently only self-trade prevention). The owner of that order needs to be told.
 struct RestingCancel {
   OrderId order_id = kInvalidOrderId;
+  Sequence sequence = 0;  // Position of the cancellation in the global event order.
   TraderId owner = kAnonymousTrader;
   Side side = Side::Buy;
   Price price = 0;
@@ -38,8 +39,10 @@ struct SubmitResult {
   Quantity filled_quantity = 0;
   Quantity resting_quantity = 0;
   Quantity cancelled_quantity = 0;
-  std::vector<Trade> trades;                 // In execution order.
-  std::vector<RestingCancel> resting_cancels;  // Resting orders removed by self-trade prevention.
+  // Trades and self-trade-prevention cancels in the order they happened. Each consumes one
+  // sequence number, so merging the two vectors by `sequence` reproduces the exact interleaving.
+  std::vector<Trade> trades;
+  std::vector<RestingCancel> resting_cancels;
 
   [[nodiscard]] bool accepted() const noexcept { return status != OrderStatus::Rejected; }
 };
@@ -63,6 +66,16 @@ struct CancelResult {
 // exactly the same ids, trades and book states: there is no wall-clock time, randomness, or
 // iteration over unordered containers anywhere on the matching path.
 //
+// Sequencing contract: every submit() and cancel() call consumes exactly one sequence number
+// (including rejected submissions and failed cancels), and so does every trade and every
+// self-trade-prevention cancel, in the order they occur. Order ids are assigned densely to
+// accepted orders only; trade ids are dense. All counters are global across instruments.
+//
+// Failure model: submit() and cancel() are noexcept. Invalid input is reported through the
+// result, never by throwing. The only possible exception is allocation failure in the middle
+// of matching, after the book has already been modified; continuing would leave reported
+// results inconsistent with the book, so the process terminates instead (fail-fast).
+//
 // Not thread-safe: callers serialise access (the simulation drives it from a single thread,
 // which is also what real exchanges do per matching shard).
 class MatchingEngine {
@@ -81,12 +94,12 @@ class MatchingEngine {
     return instrument < books_.size();
   }
 
-  // Validates and processes an order. Never throws for invalid input: problems are reported
-  // through SubmitResult::reject_reason.
-  SubmitResult submit(const OrderRequest& request);
+  // Validates and processes an order. Problems with the input are reported through
+  // SubmitResult::reject_reason.
+  SubmitResult submit(const OrderRequest& request) noexcept;
 
   // Cancels the remaining quantity of a resting order.
-  CancelResult cancel(InstrumentId instrument, OrderId order_id);
+  CancelResult cancel(InstrumentId instrument, OrderId order_id) noexcept;
 
   // Throws std::out_of_range for an unknown instrument.
   [[nodiscard]] const OrderBook& book(InstrumentId instrument) const;

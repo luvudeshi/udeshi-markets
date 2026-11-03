@@ -117,7 +117,9 @@ class OrderBook {
 
   // ---- Mutation primitives (used by MatchingEngine) ----------------------------------------
   // Inserts a new resting order at the tail of its price level. The id must be unused.
-  Order& insert(const Order& order);
+  // Takes the order by value so the argument may safely alias a node just released to the
+  // pool (e.g. remove-then-reinsert), which allocation would otherwise overwrite.
+  Order& insert(Order order);
   // Executes `quantity` of a resting order. If it becomes fully filled it is removed from the
   // book and the pointer is invalidated; returns true in that case.
   bool execute(Order& order, Quantity quantity);

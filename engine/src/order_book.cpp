@@ -86,9 +86,12 @@ std::vector<const Order*> OrderBook::orders_at(Side side_to_query, Price price) 
   return orders;
 }
 
-Order& OrderBook::insert(const Order& order) {
-  if (order.remaining_quantity <= 0) {
-    throw std::invalid_argument("OrderBook::insert: resting order must have positive quantity");
+Order& OrderBook::insert(Order order) {
+  if (order.remaining_quantity <= 0 || order.remaining_quantity > order.original_quantity) {
+    throw std::invalid_argument("OrderBook::insert: remaining quantity out of range");
+  }
+  if (!is_valid(order.side) || order.price <= 0 || order.price > kMaxPrice) {
+    throw std::invalid_argument("OrderBook::insert: invalid side or price");
   }
   // Reserve the index slot first so that a failure leaves the book untouched.
   const auto [slot, inserted] = index_.try_emplace(order.id, nullptr);
