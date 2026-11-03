@@ -9,6 +9,18 @@ from dataclasses import dataclass
 
 from udeshi_markets._engine import OrderType, SelfTradePrevention, Side, TimeInForce
 
+# Ranges of the engine's integer types (engine/include/udeshi/types.hpp).
+INT64_MIN, INT64_MAX = -(1 << 63), (1 << 63) - 1
+UINT32_MAX = (1 << 32) - 1
+UINT64_MAX = (1 << 64) - 1
+
+
+def require_int(name: str, value: object, low: int, high: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be an int, not {type(value).__name__}")
+    if not low <= value <= high:
+        raise ValueError(f"{name} {value} is outside [{low}, {high}]")
+
 
 @dataclass(frozen=True, slots=True)
 class OrderIntent:
@@ -22,6 +34,23 @@ class OrderIntent:
     price: int = 0
     time_in_force: TimeInForce = TimeInForce.GOOD_TILL_CANCEL
     self_trade_prevention: SelfTradePrevention = SelfTradePrevention.ALLOW
+
+    def __post_init__(self) -> None:
+        # Values must fit the engine's C++ types, so that a bad intent fails here, in the
+        # participant's own call, rather than in the middle of event dispatch. Values that fit
+        # but break the exchange's rules (a zero quantity, an off-grid price) are rejected by the
+        # exchange, with a reason, like any other order.
+        require_int("instrument", self.instrument, 0, UINT32_MAX)
+        require_int("quantity", self.quantity, INT64_MIN, INT64_MAX)
+        require_int("price", self.price, INT64_MIN, INT64_MAX)
+        for name, value, kind in (
+            ("side", self.side, Side),
+            ("order_type", self.order_type, OrderType),
+            ("time_in_force", self.time_in_force, TimeInForce),
+            ("self_trade_prevention", self.self_trade_prevention, SelfTradePrevention),
+        ):
+            if not isinstance(value, kind):
+                raise TypeError(f"{name} must be a {kind.__name__}, not {type(value).__name__}")
 
 
 @dataclass(frozen=True, slots=True)

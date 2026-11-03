@@ -5,6 +5,7 @@ the bar its timestamp falls in, independently of the order in which same-time ev
 be processed, so bars are a pure function of the trade stream.
 """
 
+import itertools
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -162,11 +163,15 @@ class MarketRecorder:
         return closed
 
     def trades(self, instrument: int, limit: int | None = None) -> list[PublicTrade]:
-        """Up to ``limit`` most recent trades, oldest first."""
+        """Up to ``limit`` most recent trades, oldest first. Costs O(limit), not O(history)."""
         trades = self._histories[instrument].trades
         if limit is None or limit >= len(trades):
             return list(trades)
-        return list(trades)[len(trades) - limit :]
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        recent = list(itertools.islice(reversed(trades), limit))
+        recent.reverse()
+        return recent
 
     def trades_recorded(self, instrument: int) -> int:
         """Total trades ever recorded for the instrument (including any no longer retained)."""

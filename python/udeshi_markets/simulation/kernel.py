@@ -31,12 +31,15 @@ from udeshi_markets._engine import (
 )
 from udeshi_markets.simulation.config import SimulationConfig
 from udeshi_markets.simulation.events import (
+    UINT32_MAX,
+    UINT64_MAX,
     CancelArrival,
     EventQueue,
     OrderArrival,
     OrderIntent,
     ScheduledEvent,
     Wakeup,
+    require_int,
 )
 from udeshi_markets.simulation.participant import (
     CancelReport,
@@ -95,6 +98,13 @@ class SimulationSummary:
 # Digest record kinds.
 _ORDER, _CANCEL, _WAKEUP = 1, 2, 3
 _CANCEL_STATUS_CODE = {status: code for code, status in enumerate(CancelStatus)}
+
+
+def _check_cancel_target(instrument: int, order_id: int) -> None:
+    """Rejects ids that cannot be represented by the engine's types, before any state changes.
+    (An id that fits but names no order is a normal outcome: NOT_FOUND or UNKNOWN_INSTRUMENT.)"""
+    require_int("instrument", instrument, 0, UINT32_MAX)
+    require_int("order_id", order_id, 0, UINT64_MAX)
 
 
 class SimulationContext:
@@ -319,6 +329,7 @@ class Simulation:
     def schedule_cancel(self, participant_id: int, instrument: int, order_id: int) -> None:
         self._require_participant(participant_id)
         self._require(_ACTIVE, "schedule a cancel")
+        _check_cancel_target(instrument, order_id)
         self._queue.push(
             self._now + self._config.order_latency_ns,
             CancelArrival(participant_id, instrument, order_id),
@@ -342,6 +353,7 @@ class Simulation:
     def cancel_now(self, participant_id: int, instrument: int, order_id: int) -> CancelReport:
         """Processes a cancel immediately at the current simulated time (manual trading)."""
         self._require_external_action(participant_id, "cancel an order")
+        _check_cancel_target(instrument, order_id)
         report = self._execute_cancel(participant_id, instrument, order_id)
         self._after_progress()
         return report
@@ -540,13 +552,19 @@ class Simulation:
                 status = CancelStatus.CANCELLED
                 cancelled_quantity = result.cancelled_quantity
                 self._dirty.add(instrument)
-        self._digest_record(
-            _CANCEL,
-            participant_id,
-            instrument,
-            order_id,
-            _CANCEL_STATUS_CODE[status],
-            cancelled_quantity,
+        # The order id is the engine's unsigned 64-bit type, so it is packed unsigned. For ids
+        # below 2**63 the bytes equal the signed encoding, so recorded digests are unchanged.
+        self._digest.update(
+            struct.pack(
+                "<BqqqQqq",
+                _CANCEL,
+                self._now,
+                participant_id,
+                instrument,
+                order_id,
+                _CANCEL_STATUS_CODE[status],
+                cancelled_quantity,
+            )
         )
         report = CancelReport(
             time=self._now,

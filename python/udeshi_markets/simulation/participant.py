@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from udeshi_markets._engine import CancelReason, OrderStatus, RejectReason, Side
-from udeshi_markets.simulation.events import OrderIntent
+from udeshi_markets.simulation.events import INT64_MAX, OrderIntent
 
 if TYPE_CHECKING:
     from udeshi_markets.simulation.kernel import SimulationContext
@@ -75,8 +75,10 @@ class Participant:
     """
 
     def __init__(self, participant_id: int, name: str | None = None) -> None:
-        if participant_id <= 0:
-            raise ValueError("participant ids must be positive (0 is the anonymous trader)")
+        if not 0 < participant_id <= INT64_MAX:
+            raise ValueError(
+                "participant ids must lie in [1, 2**63 - 1] (0 is the anonymous trader)"
+            )
         self.participant_id = participant_id
         self.name = name or f"participant-{participant_id}"
 

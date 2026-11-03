@@ -110,6 +110,17 @@ def test_tape_is_public_and_optionally_bounded() -> None:
     assert recorder.trades_recorded(0) == 3
 
 
+def test_recent_trades_slice_from_the_end() -> None:
+    recorder = MarketRecorder([100], bar_width_ns=10)
+    for trade in _trades(*((t, 100 + t, 1) for t in range(1, 8))):
+        recorder.record(trade)
+    assert [t.price for t in recorder.trades(0, limit=3)] == [105, 106, 107]
+    assert [t.price for t in recorder.trades(0, limit=0)] == []
+    assert len(recorder.trades(0, limit=100)) == 7
+    with pytest.raises(ValueError, match="limit must be non-negative"):
+        recorder.trades(0, limit=-1)
+
+
 def test_invalid_bar_width() -> None:
     with pytest.raises(ValueError, match="bar width must be positive"):
         MarketRecorder([100], bar_width_ns=0)

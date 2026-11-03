@@ -504,5 +504,80 @@ def test_instrument_prices_must_be_on_grid() -> None:
 def test_duplicate_participant_ids_are_rejected() -> None:
     with pytest.raises(ValueError, match="duplicate"):
         Simulation(config(), lambda: [Participant(1), Participant(1)])
-    with pytest.raises(ValueError, match="participant ids must be positive"):
+    with pytest.raises(ValueError, match="participant ids must lie in"):
         Participant(0)
+    with pytest.raises(ValueError, match="participant ids must lie in"):
+        Participant(1 << 63)  # Must fit the signed 64-bit digest encoding.
+    assert Participant((1 << 63) - 1).participant_id == (1 << 63) - 1
+
+
+@pytest.mark.parametrize(
+    ("fields", "error", "message"),
+    [
+        ({"instrument": -1}, ValueError, "instrument -1 is outside"),
+        ({"instrument": 1 << 32}, ValueError, "instrument 4294967296 is outside"),
+        ({"quantity": 1 << 63}, ValueError, "quantity .* is outside"),
+        ({"price": -(1 << 63) - 1}, ValueError, "price .* is outside"),
+        ({"quantity": 1.0}, TypeError, "quantity must be an int, not float"),
+        ({"price": True}, TypeError, "price must be an int, not bool"),
+        ({"side": 1}, TypeError, "side must be a Side, not int"),
+        ({"time_in_force": "gtc"}, TypeError, "time_in_force must be a TimeInForce"),
+    ],
+)
+def test_order_intents_must_fit_the_engine_types(
+    fields: dict[str, object], error: type[Exception], message: str
+) -> None:
+    values: dict[str, object] = {"instrument": 0, "side": Side.BUY, "quantity": 1, "price": 100}
+    values.update(fields)
+    with pytest.raises(error, match=message):
+        OrderIntent(**values)  # type: ignore[arg-type]
+
+
+def test_intents_that_fit_but_break_exchange_rules_are_rejected_not_raised() -> None:
+    simulation = Simulation(config(), lambda: [Participant(7)])
+    simulation.start()
+    for intent in (buy(100, 0), buy(100, -5), buy(-1, 1), OrderIntent(9, Side.BUY, 1, price=1)):
+        assert simulation.submit_now(7, intent).status is OrderStatus.REJECTED
+    assert simulation.summary().orders_rejected == 4
+
+
+@pytest.mark.parametrize(
+    ("instrument", "order_id", "message"),
+    [
+        (0, -1, "order_id -1 is outside"),
+        (0, 1 << 64, "order_id 18446744073709551616 is outside"),
+        (-1, 1, "instrument -1 is outside"),
+        (1 << 63, 1, "instrument .* is outside"),
+    ],
+)
+def test_unrepresentable_cancel_ids_fail_before_any_state_changes(
+    instrument: int, order_id: int, message: str
+) -> None:
+    holder: list[SimulationContext] = []
+
+    class Holder(Participant):
+        def on_start(self, ctx: SimulationContext) -> None:
+            holder.append(ctx)
+
+    simulation = Simulation(config(), lambda: [Holder(7)])
+    simulation.start()
+    before = simulation.summary()
+    with pytest.raises(ValueError, match=message):
+        simulation.cancel_now(7, instrument, order_id)
+    with pytest.raises(ValueError, match=message):
+        holder[0].cancel(instrument, order_id)
+    assert simulation.summary() == before
+    assert simulation.pending_events == 0
+
+
+def test_cancels_of_any_representable_id_are_digested() -> None:
+    """Ids at the top of the unsigned 64-bit range are valid requests (for orders that do not
+    exist) and must be recorded, not crash the digest's encoding."""
+    simulation = Simulation(
+        config(instruments=(*ONE_INSTRUMENT, InstrumentConfig("B", 1.0))), lambda: [Participant(7)]
+    )
+    simulation.start()
+    for instrument, order_id in ((0, 1 << 63), (0, (1 << 64) - 1), (5, 1), ((1 << 32) - 1, 0)):
+        report = simulation.cancel_now(7, instrument, order_id)
+        assert report.status in (CancelStatus.NOT_FOUND, CancelStatus.UNKNOWN_INSTRUMENT)
+    assert simulation.summary().cancels_requested == 4
