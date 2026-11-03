@@ -327,12 +327,20 @@ A compile failure counts as a kill only if a `static_assert` fires, since some p
 (deep-const accessors, saturating arithmetic) are tested at compile time. Any other build
 failure marks the mutant itself as invalid.
 
-**Current result: 49/49 killed.** The history behind that number:
+**Current result: 61/61 killed on both Linux (GCC, libstdc++) and macOS (Clang, libc++).** The
+history behind that number:
 * The first version of the suite, with 20 mutants, missed one: an untested STP cancel
   quantity.
 * An independent adversarial review then built about 15 more mutants that the suite of the time
   missed. They included sequence-number gaps, per-instrument id counters, timestamp-keyed FIFO,
   wrong cancel reasons, and use of a released pool node.
+* A second review found about 15 more:
+  * an unchecked `noexcept` on `Exchange::submit`;
+  * an unsaturated volume at the call site;
+  * the market-order validation order;
+  * registration bounds;
+  * a shared STP bug in the engine and the model;
+  * new[]/delete mismatches hidden by the fault-injection allocator.
 * Each one led to a new test, and all are now in the mutant list.
 
 ## Known limitations

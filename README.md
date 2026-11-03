@@ -35,7 +35,7 @@ simulation, API and frontend are under construction; see the
   - golden cross-platform determinism digests;
   - allocation-failure injection;
   - ASan/UBSan with pool poisoning;
-  - mutation testing (49/49 injected bugs caught).
+  - mutation testing: 61/61 injected bugs caught on Linux and macOS, re-checked weekly in CI.
 
 ```
 Sell 10 @ 101, Sell 5 @ 102, then Buy 12 @ 102
@@ -69,7 +69,7 @@ ctest --preset release
 Presets: `debug`, `release`, `asan` (Debug + AddressSanitizer + UndefinedBehaviorSanitizer).
 
 ```bash
-python3 tools/mutation_test.py --jobs 4   # optional: check the suite catches 49 injected bugs
+python3 tools/mutation_test.py --jobs 4   # optional: check the suite catches all 61 injected bugs
 ```
 
 ## Repository layout
