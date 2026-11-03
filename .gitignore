@@ -30,3 +30,6 @@ test-results/
 # Local env
 .env
 .env.local
+
+# uv
+uv.lock.bak

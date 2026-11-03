@@ -246,25 +246,31 @@ double Exchange::to_currency(InstrumentId instrument, Price ticks) const {
   return static_cast<double>(ticks) * state(instrument).spec.tick_size;
 }
 
-Price Exchange::to_ticks(InstrumentId instrument, double currency_price) const {
-  const double tick_size = state(instrument).spec.tick_size;
+Price price_to_ticks(double currency_price, double tick_size) {
+  if (!(tick_size >= kMinTickSize && tick_size <= kMaxTickSize)) {  // Also rejects NaN.
+    throw std::invalid_argument("price_to_ticks: tick size must be within [1e-12, 1e12]");
+  }
   if (!std::isfinite(currency_price)) {
-    throw std::invalid_argument("Exchange::to_ticks: price must be finite");
+    throw std::invalid_argument("price_to_ticks: price must be finite");
   }
   if (currency_price < 0.0) {  // -0.0 compares equal to 0.0 and is accepted.
-    throw std::invalid_argument("Exchange::to_ticks: price must be non-negative");
+    throw std::invalid_argument("price_to_ticks: price must be non-negative");
   }
   const double ticks = currency_price / tick_size;
   // Range-check before rounding and casting. Allowing half a tick above kMaxPrice admits
   // floating-point noise at the bound; rounding then lands inside the range.
   if (!(ticks < static_cast<double>(kMaxPrice) + 0.5)) {
-    throw std::invalid_argument("Exchange::to_ticks: price out of range");
+    throw std::invalid_argument("price_to_ticks: price out of range");
   }
   const double rounded = std::round(ticks);
   if (std::fabs(ticks - rounded) > kTickGridRelativeTolerance * std::max(1.0, ticks)) {
-    throw std::invalid_argument("Exchange::to_ticks: price is not a multiple of the tick size");
+    throw std::invalid_argument("price_to_ticks: price is not a multiple of the tick size");
   }
   return static_cast<Price>(rounded);
+}
+
+Price Exchange::to_ticks(InstrumentId instrument, double currency_price) const {
+  return price_to_ticks(currency_price, state(instrument).spec.tick_size);
 }
 
 }  // namespace udeshi

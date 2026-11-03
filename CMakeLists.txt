@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(udeshi_markets
-  VERSION 0.1.0
+  VERSION 0.2.0
   DESCRIPTION "Simulated electronic exchange and market simulation engine"
   LANGUAGES CXX)
 
@@ -15,6 +15,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(UDESHI_BUILD_TESTS "Build the GoogleTest suite" ON)
+option(UDESHI_BUILD_PYTHON "Build the pybind11 extension module (udeshi_markets._engine)" OFF)
 option(UDESHI_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(UDESHI_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
@@ -44,3 +45,7 @@ if(UDESHI_BUILD_TESTS)
 endif()
 
 add_subdirectory(engine)
+
+if(UDESHI_BUILD_PYTHON)
+  add_subdirectory(python)
+endif()

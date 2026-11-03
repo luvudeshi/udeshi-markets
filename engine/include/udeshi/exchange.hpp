@@ -59,6 +59,12 @@ struct MarketStatistics {
   }
 };
 
+// Converts a currency price to integer ticks for a given tick size, with exactly the rules of
+// Exchange::to_ticks (which delegates here): throws std::invalid_argument for a tick size
+// outside [kMinTickSize, kMaxTickSize], a non-finite or negative price, a price above kMaxPrice
+// ticks, or a price that is not on the tick grid up to floating-point rounding error.
+[[nodiscard]] Price price_to_ticks(double currency_price, double tick_size);
+
 // Updates trade-derived statistics (last / open / high / low, volume, count, notional, VWAP)
 // with one execution. Used by Exchange for every trade; exposed so that edge cases such as
 // volume saturation can be tested directly.

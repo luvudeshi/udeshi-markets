@@ -245,6 +245,17 @@ TEST_F(ExchangeTest, NotionalIsExactAndPlatformIndependent) {
   EXPECT_EQ(stats.notional, 8.653660880766912e+17);
 }
 
+TEST(PriceToTicks, MatchesExchangeConversionAndValidatesTickSize) {
+  EXPECT_EQ(price_to_ticks(100.01, 0.01), 10'001);
+  EXPECT_EQ(price_to_ticks(30000.05, 0.05), 600'001);
+  EXPECT_EQ(price_to_ticks(0.0, 0.01), 0);
+  EXPECT_THROW(static_cast<void>(price_to_ticks(100.005, 0.01)), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(price_to_ticks(-0.01, 0.01)), std::invalid_argument);
+  for (const double tick : {0.0, -0.01, 1e-13, 1e13, std::numeric_limits<double>::quiet_NaN()}) {
+    EXPECT_THROW(static_cast<void>(price_to_ticks(1.0, tick)), std::invalid_argument) << tick;
+  }
+}
+
 TEST(SaturatingAdd, ClampsInsteadOfOverflowing) {
   constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
   static_assert(saturating_add(1, 2) == 3);

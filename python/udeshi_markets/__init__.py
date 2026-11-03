@@ -1,0 +1,66 @@
+"""Udeshi Markets: a simulated electronic exchange.
+
+The matching engine is implemented in C++20 (``udeshi_markets._engine``); this package
+re-exports it and adds the discrete-event simulation layer (``udeshi_markets.simulation``).
+All prices crossing this API are integer ticks unless a name says otherwise.
+"""
+
+from udeshi_markets._engine import (
+    ANONYMOUS_TRADER,
+    INVALID_ORDER_ID,
+    MAX_ORDER_QUANTITY,
+    MAX_PRICE,
+    MAX_TICK_SIZE,
+    MIN_TICK_SIZE,
+    BookSnapshot,
+    CancelOutcome,
+    CancelReason,
+    CancelResult,
+    Exchange,
+    InstrumentSpec,
+    LevelView,
+    MarketStatistics,
+    Order,
+    OrderRequest,
+    OrderStatus,
+    OrderType,
+    RejectReason,
+    RestingCancel,
+    SelfTradePrevention,
+    Side,
+    SubmitResult,
+    TimeInForce,
+    Trade,
+    __version__,
+    price_to_ticks,
+)
+
+__all__ = [
+    "ANONYMOUS_TRADER",
+    "INVALID_ORDER_ID",
+    "MAX_ORDER_QUANTITY",
+    "MAX_PRICE",
+    "MAX_TICK_SIZE",
+    "MIN_TICK_SIZE",
+    "BookSnapshot",
+    "CancelOutcome",
+    "CancelReason",
+    "CancelResult",
+    "Exchange",
+    "InstrumentSpec",
+    "LevelView",
+    "MarketStatistics",
+    "Order",
+    "OrderRequest",
+    "OrderStatus",
+    "OrderType",
+    "RejectReason",
+    "RestingCancel",
+    "SelfTradePrevention",
+    "Side",
+    "SubmitResult",
+    "TimeInForce",
+    "Trade",
+    "__version__",
+    "price_to_ticks",
+]

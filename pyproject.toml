@@ -1,0 +1,67 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=3.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "udeshi-markets"
+version = "0.2.0"
+description = "Simulated electronic exchange: C++20 matching engine with a Python simulation layer"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "hypothesis>=6.112",
+  "httpx>=0.27",
+  "mypy>=1.11",
+  "ruff>=0.6",
+]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.24"
+build-dir = "build/python/{wheel_tag}"
+wheel.packages = ["python/udeshi_markets"]
+
+[tool.scikit-build.cmake.define]
+UDESHI_BUILD_PYTHON = "ON"
+UDESHI_BUILD_TESTS = "OFF"
+# The C++ CI builds with -Werror; a pip install on an unknown compiler should not fail on a new
+# warning.
+UDESHI_WARNINGS_AS_ERRORS = "OFF"
+
+[tool.uv.workspace]
+members = ["backend"]
+
+[tool.uv]
+# Rebuild the extension whenever the C++ sources or build files change.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "CMakeLists.txt" },
+  { file = "engine/**/*.{hpp,cpp,txt}" },
+  { file = "python/CMakeLists.txt" },
+  { file = "python/bindings/*.cpp" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests", "backend/tests"]
+addopts = "-ra --strict-markers"
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["python/udeshi_markets", "python/tests", "backend/udeshi_api", "backend/tests"]
+
+[[tool.mypy.overrides]]
+module = ["hypothesis.*"]
+follow_untyped_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "N", "PT", "C4", "PIE", "RET"]
