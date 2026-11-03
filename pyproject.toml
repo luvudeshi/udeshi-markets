@@ -61,6 +61,7 @@ cache-keys = [
   { file = "engine/**/*.{hpp,cpp,txt}" },
   { file = "python/CMakeLists.txt" },
   { file = "python/bindings/*.cpp" },
+  { file = "python/bindings/exports.map" },
 ]
 
 [tool.pytest.ini_options]

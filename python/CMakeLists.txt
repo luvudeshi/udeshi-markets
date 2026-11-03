@@ -15,5 +15,12 @@ else()
   set(UDESHI_MODULE_VERSION "${PROJECT_VERSION}")
 endif()
 target_compile_definitions(_engine PRIVATE UDESHI_VERSION="${UDESHI_MODULE_VERSION}")
+# Hidden visibility is not enough under GCC: type information for the engine's enum types is
+# still exported. On ELF platforms a version script exports the init function and nothing else.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(UDESHI_EXPORTS_MAP "${CMAKE_CURRENT_SOURCE_DIR}/bindings/exports.map")
+  target_link_options(_engine PRIVATE "LINKER:--version-script=${UDESHI_EXPORTS_MAP}")
+  set_property(TARGET _engine APPEND PROPERTY LINK_DEPENDS "${UDESHI_EXPORTS_MAP}")
+endif()
 
 install(TARGETS _engine LIBRARY DESTINATION udeshi_markets)

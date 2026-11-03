@@ -1,0 +1,7 @@
+/* Linker version script for the extension module on ELF platforms: export only the module's
+   init function. Everything else, including type information for the engine's types, stays
+   local to the module. */
+{
+  global: PyInit__engine;
+  local: *;
+};
