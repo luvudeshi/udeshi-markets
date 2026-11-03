@@ -1,0 +1,32 @@
+# Build outputs
+build/
+build-*/
+cmake-build-*/
+out/
+compile_commands.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+*.so
+
+# Node / Next.js
+node_modules/
+.next/
+frontend/out/
+playwright-report/
+test-results/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local env
+.env
+.env.local
