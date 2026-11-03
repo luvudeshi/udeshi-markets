@@ -17,8 +17,12 @@ StateName = Literal["created", "running", "paused", "stopped", "completed"]
 StatusName = Literal["rejected", "resting", "filled", "cancelled"]
 
 
+MAX_DURATION_SECONDS = 7 * 24 * 3600
+
+
 class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # JSON has no infinities or NaN, and Python's parser would otherwise accept them.
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 # ---- Requests ----------------------------------------------------------------------------------
@@ -34,10 +38,10 @@ class SimulationCreate(_Model):
     instruments: list[InstrumentIn] | None = Field(
         default=None, min_length=1, max_length=50, description="Defaults to the five demo assets."
     )
-    duration_seconds: float = Field(default=1800.0, gt=0, le=7 * 24 * 3600)
+    duration_seconds: float = Field(default=1800.0, gt=0, le=MAX_DURATION_SECONDS)
     seed: int = Field(default=1, ge=0, lt=1 << 64)
     order_latency_ms: float = Field(default=0.0, ge=0, le=60_000)
-    bar_interval_seconds: float = Field(default=1.0, gt=0)
+    bar_interval_seconds: float = Field(default=1.0, ge=0.001, le=MAX_DURATION_SECONDS)
     speed: float = Field(default=1.0, gt=0, le=10_000, description="Simulated seconds per second.")
 
 

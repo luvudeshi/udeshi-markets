@@ -1,19 +1,21 @@
 """WebSocket stream of live market data for one simulation.
 
 Protocol (server to client, JSON text frames):
+  {"type": "snapshot", "simulation": {...}, "markets": [...]}   full state; replaces the client's
   {"type": "simulation", ...}   lifecycle state, simulated time, progress, speed
   {"type": "book", ...}         order book for a symbol (the configured depth)
   {"type": "market", ...}       market summary for a symbol
-  {"type": "trades", "symbol", "trades": [...]}   new public trades
-  {"type": "bars", "symbol", "bars": [...]}       newly closed OHLCV bars
+  {"type": "trades", "symbol", "trades": [...]}              new public trades
+  {"type": "bars", "symbol", "bars": [...], "omitted": n}    newly closed OHLCV bars
   {"type": "closed"}            the simulation was deleted; the server then closes the socket
-A new connection first receives a snapshot (status, then book, market and recent trades per
-subscribed symbol), then incremental updates once per runner tick. Client messages are ignored.
+A connection starts with a snapshot, then receives incremental updates once per runner tick.
+A new snapshot arrives after a reset, or if the client fell so far behind that its buffer could
+not hold the updates. Client messages (text or binary) are ignored.
 """
 
 import asyncio
 import contextlib
-import json
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
@@ -24,6 +26,7 @@ from udeshi_api.hub import Subscriber
 from udeshi_api.sessions import SessionManager
 
 router = APIRouter(tags=["stream"])
+logger = logging.getLogger("udeshi_api.stream")
 
 # Application-defined WebSocket close codes (4000-4999).
 CLOSE_UNKNOWN_SIMULATION = 4404
@@ -37,6 +40,9 @@ async def stream(
     sessions: Annotated[SessionManager, Depends(get_sessions_ws)],
     symbols: Annotated[str | None, Query(description="Comma-separated; default: all.")] = None,
 ) -> None:
+    # Accept first: a close before the handshake completes reaches clients as an HTTP 403
+    # with no code or reason, so they could not tell a missing simulation from a bad symbol.
+    await websocket.accept()
     try:
         session = sessions.get(simulation_id)
     except ApiError as error:
@@ -52,18 +58,19 @@ async def stream(
             )
             return
 
-    await websocket.accept()
-    subscriber = session.hub.subscribe(requested)
+    subscriber = session.hub.subscribe(requested)  # Its queue starts with the snapshot.
     try:
-        for message in session.snapshot_messages(requested):
-            await websocket.send_text(json.dumps(message, separators=(",", ":")))
         sender = asyncio.create_task(_forward(websocket, subscriber))
         receiver = asyncio.create_task(_discard_incoming(websocket))
-        _, pending = await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect):
                 await task
+        for task in done:
+            failure = task.exception()
+            if failure is not None and not isinstance(failure, WebSocketDisconnect):
+                logger.error("stream %s failed", simulation_id, exc_info=failure)
     finally:
         session.hub.unsubscribe(subscriber)
         with contextlib.suppress(RuntimeError):  # Already closed by the client.
@@ -79,7 +86,9 @@ async def _forward(websocket: WebSocket, subscriber: Subscriber) -> None:
 
 
 async def _discard_incoming(websocket: WebSocket) -> None:
-    """Reads (and ignores) client frames so that a disconnect is noticed promptly."""
-    with contextlib.suppress(WebSocketDisconnect):
-        while True:
-            await websocket.receive_text()
+    """Reads and ignores client frames of either kind, so that a disconnect is noticed
+    promptly."""
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            return

@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
-from udeshi_api.hub import StreamHub
+from udeshi_api.hub import StreamHub, Subscriber
 from udeshi_api.runner import LiveRunner
-from udeshi_api.serialization import PriceFormat, aggregate_bars
+from udeshi_api.serialization import PriceFormat, aggregate_bars, recent_bars
 from udeshi_markets.simulation import (
     SECOND,
     Bar,
@@ -126,20 +127,62 @@ async def test_runner_records_participant_failures() -> None:
     assert [str(error) for error in session.failures] == ["strategy bug"]
 
 
-async def test_hub_filters_by_symbol_and_drops_oldest_when_full() -> None:
-    hub = StreamHub(queue_size=2)
+def _snapshots(queue_size: int = 3) -> tuple[list[frozenset[str] | None], StreamHub]:
+    requests: list[frozenset[str] | None] = []
+
+    def snapshot(symbols: frozenset[str] | None) -> dict[str, Any]:
+        requests.append(symbols)
+        return {"type": "snapshot", "n": len(requests)}
+
+    return requests, StreamHub(queue_size=queue_size, snapshot=snapshot)
+
+
+def _drain(subscriber: Subscriber) -> list[Any]:
+    messages = []
+    while not subscriber.queue.empty():
+        messages.append(json.loads(subscriber.queue.get_nowait()))
+    return messages
+
+
+async def test_hub_starts_each_subscriber_with_a_snapshot_and_filters_by_symbol() -> None:
+    requests, hub = _snapshots(queue_size=4)
     everything = hub.subscribe(None)
     acme_only = hub.subscribe(frozenset({"ACME"}))
-    for index in range(3):
-        hub.publish({"n": index}, "ACME")
-    hub.publish({"n": "nova"}, "NOVA")
-    hub.publish({"n": "all"})
-    assert [json.loads(everything.queue.get_nowait())["n"] for _ in range(2)] == ["nova", "all"]
-    assert everything.dropped == 3
-    assert [json.loads(acme_only.queue.get_nowait())["n"] for _ in range(2)] == [2, "all"]
-    assert acme_only.dropped == 2
+    assert requests == [None, frozenset({"ACME"})]
+    hub.publish([({"n": "acme"}, "ACME"), ({"n": "nova"}, "NOVA"), ({"n": "all"}, None)])
+    assert [m["n"] for m in _drain(everything)] == [1, "acme", "nova", "all"]
+    assert [m["n"] for m in _drain(acme_only)] == [2, "acme", "all"]
     hub.unsubscribe(acme_only)
     assert hub.subscriber_count == 1
+
+
+async def test_hub_resyncs_a_subscriber_that_cannot_take_a_whole_batch() -> None:
+    requests, hub = _snapshots()
+    subscriber = hub.subscribe(None)
+    _drain(subscriber)
+    hub.publish([({"n": 1}, None), ({"n": 2}, None)])
+    # Three more do not fit beside the two queued: the queue is replaced by one fresh snapshot,
+    # never by a batch with a hole in it.
+    hub.publish([({"n": 3}, None), ({"n": 4}, None), ({"n": 5}, None)])
+    assert _drain(subscriber) == [{"type": "snapshot", "n": 2}]
+    assert subscriber.resyncs == 1
+    hub.publish([({"n": 6}, None)])
+    assert _drain(subscriber) == [{"n": 6}]
+    assert requests == [None, None]
+
+
+async def test_hub_resync_all_and_close() -> None:
+    _, hub = _snapshots()
+    subscriber = hub.subscribe(frozenset({"ACME"}))
+    hub.publish([({"n": 1}, "ACME")])
+    hub.resync_all()
+    assert _drain(subscriber) == [{"type": "snapshot", "n": 2}]
+    hub.publish([({"n": i}, "ACME") for i in range(3)])  # Fills the queue.
+    hub.close()  # The final message must fit even so.
+    assert _drain(subscriber)[-1] == {"type": "closed"}
+    assert subscriber.closed
+    hub.publish([({"n": 9}, None)])
+    assert subscriber.queue.empty()  # Nothing after "closed".
 
 
 def test_price_format_rounds_to_the_tick_grid() -> None:
@@ -159,12 +202,26 @@ def _bar(start: int, close: int, volume: int) -> Bar:
 
 def test_aggregate_bars_aligns_to_the_wider_interval() -> None:
     bars = [_bar(start, close, vol) for start, close, vol in [(0, 5, 1), (10, 7, 2), (20, 6, 0)]]
-    merged = aggregate_bars(bars, 2)
+    merged = aggregate_bars(bars, 10, 2)
     assert [(b.start, b.end, b.open, b.high, b.low, b.close, b.volume) for b in merged] == [
         (0, 20, 5, 7, 5, 7, 3),
         (20, 30, 6, 6, 6, 6, 0),
     ]
-    assert aggregate_bars(bars, 1) == bars
-    assert aggregate_bars([], 3) == []
+    assert aggregate_bars(bars, 10, 1) == bars
+    assert aggregate_bars([], 10, 3) == []
     with pytest.raises(ValueError, match="at least 1"):
-        aggregate_bars(bars, 0)
+        aggregate_bars(bars, 10, 0)
+
+
+def test_recent_bars_equals_the_tail_of_the_full_aggregation() -> None:
+    """The history endpoint aggregates only the tail it needs; it must give exactly what
+    aggregating the whole history would. The last base bar is partial, as after a stop."""
+    for count in range(25):
+        bars = [_bar(10 * i, 100 + i % 7, i % 3) for i in range(count)]
+        if bars:
+            last = bars[-1]
+            bars[-1] = Bar(0, last.start, last.start + 4, *(last.open,) * 4, 1, 1, last.open)
+        for factor in range(1, 6):
+            full = aggregate_bars(bars, 10, factor)
+            for limit in range(1, 9):
+                assert recent_bars(bars, 10, factor, limit) == full[-limit:], (count, factor)

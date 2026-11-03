@@ -5,6 +5,7 @@ from fastapi import APIRouter, Response, status
 from udeshi_api.deps import Sessions
 from udeshi_api.errors import ApiError
 from udeshi_api.schemas import SimulationCreate, SimulationOut, SpeedIn, StepIn
+from udeshi_api.settings import Settings
 from udeshi_markets.simulation import (
     DEFAULT_INSTRUMENTS,
     InstrumentConfig,
@@ -15,7 +16,7 @@ from udeshi_markets.simulation import (
 router = APIRouter(prefix="/api/simulations", tags=["simulations"])
 
 
-def _config(body: SimulationCreate) -> SimulationConfig:
+def _config(body: SimulationCreate, settings: Settings) -> SimulationConfig:
     try:
         instruments = (
             DEFAULT_INSTRUMENTS
@@ -24,17 +25,29 @@ def _config(body: SimulationCreate) -> SimulationConfig:
                 InstrumentConfig(i.symbol, i.reference_price, i.tick_size) for i in body.instruments
             )
         )
-        return SimulationConfig(
+        config = SimulationConfig(
             instruments=instruments,
             duration_ns=seconds(body.duration_seconds),
             seed=body.seed,
             order_latency_ns=round(body.order_latency_ms * 1_000_000),
             bar_interval_ns=seconds(body.bar_interval_seconds),
+            trade_history_limit=settings.trade_history_limit,
         )
     except ValueError as error:
-        raise ApiError(
-            status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_configuration", str(error)
-        ) from error
+        raise _invalid(str(error)) from error
+    per_instrument = -(-config.duration_ns // config.bar_interval_ns)  # Ceiling division.
+    bars = per_instrument * len(config.instruments)
+    if bars > settings.max_bars_per_simulation:
+        raise _invalid(
+            f"{len(config.instruments)} instruments x {per_instrument} bars = {bars} bars, more "
+            f"than the limit of {settings.max_bars_per_simulation}: use a wider bar interval "
+            "or a shorter duration"
+        )
+    return config
+
+
+def _invalid(message: str) -> ApiError:
+    return ApiError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_configuration", message)
 
 
 @router.get("")
@@ -44,7 +57,7 @@ async def list_simulations(sessions: Sessions) -> list[SimulationOut]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_simulation(body: SimulationCreate, sessions: Sessions) -> SimulationOut:
-    session = await sessions.create(_config(body), body.speed)
+    session = sessions.create(_config(body, sessions.settings), body.speed)
     return session.describe(active=True)
 
 

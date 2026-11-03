@@ -59,10 +59,19 @@ class LiveRunner:
         if not self.running:
             self._task = asyncio.create_task(self._run(), name=f"simulation-{self._session.id}")
 
-    async def stop(self) -> None:
+    def cancel(self) -> asyncio.Task[None] | None:
+        """Requests cancellation without waiting. Returns the task if it was still running.
+        The runner never awaits between advancing the simulation and publishing, so it cannot
+        be interrupted half-way through a tick."""
         task, self._task = self._task, None
-        if task is not None and not task.done():
-            task.cancel()
+        if task is None or task.done():
+            return None
+        task.cancel()
+        return task
+
+    async def stop(self) -> None:
+        task = self.cancel()
+        if task is not None:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 

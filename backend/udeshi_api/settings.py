@@ -23,8 +23,14 @@ class Settings:
     max_events_per_tick: int = 200_000
     """Cap on events processed per tick, so a fast simulation cannot starve the event loop."""
     stream_queue_size: int = 512
-    """Messages buffered per WebSocket client before the oldest are dropped."""
+    """Messages buffered per WebSocket client. A client that falls further behind is sent a
+    fresh snapshot instead of the updates it missed."""
     stream_book_depth: int = 15
+    max_bars_per_simulation: int = 500_000
+    """Cap on the OHLCV bars a simulation can produce (instruments x duration / bar interval),
+    which bounds its memory and the work of closing bars when simulated time jumps."""
+    trade_history_limit: int = 10_000
+    """Recent trades kept per instrument for the tape endpoint and stream snapshots."""
     cors_origins: tuple[str, ...] = field(default=("http://localhost:3000",))
 
     def __post_init__(self) -> None:
@@ -36,6 +42,10 @@ class Settings:
             raise ValueError("max_events_per_tick must be at least 1")
         if self.stream_queue_size < 1:
             raise ValueError("stream_queue_size must be at least 1")
+        if self.max_bars_per_simulation < 1:
+            raise ValueError("max_bars_per_simulation must be at least 1")
+        if self.trade_history_limit < 1:
+            raise ValueError("trade_history_limit must be at least 1")
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -48,6 +58,8 @@ class Settings:
             max_events_per_tick=_int("UDESHI_MAX_EVENTS_PER_TICK", defaults.max_events_per_tick),
             stream_queue_size=_int("UDESHI_STREAM_QUEUE_SIZE", defaults.stream_queue_size),
             stream_book_depth=_int("UDESHI_STREAM_BOOK_DEPTH", defaults.stream_book_depth),
+            max_bars_per_simulation=_int("UDESHI_MAX_BARS", defaults.max_bars_per_simulation),
+            trade_history_limit=_int("UDESHI_TRADE_HISTORY", defaults.trade_history_limit),
             cors_origins=(
                 tuple(o.strip() for o in origins.split(",") if o.strip())
                 if origins

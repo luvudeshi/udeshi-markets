@@ -161,14 +161,26 @@ def open_order_out(order: Order, symbol: str, fmt: PriceFormat) -> OpenOrderOut:
     )
 
 
-def aggregate_bars(bars: Sequence[Bar], factor: int) -> list[Bar]:
+def recent_bars(bars: Sequence[Bar], base_width: int, factor: int, limit: int) -> list[Bar]:
+    """The ``limit`` most recent bars ``factor`` times wider than the contiguous base bars.
+    Costs O(limit * factor), however long the history: only the needed tail is aggregated."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    first = max(0, len(bars) - (limit + 1) * factor)
+    merged = aggregate_bars(bars[first:], base_width, factor)
+    if first > 0 and bars[first].start % (base_width * factor) != 0:
+        merged = merged[1:]  # Its earlier base bars were cut off by the slice.
+    return merged[-limit:]
+
+
+def aggregate_bars(bars: Sequence[Bar], base_width: int, factor: int) -> list[Bar]:
     """Merges consecutive base bars into bars ``factor`` times wider, aligned to multiples of
     the wider interval. The last group may be partial (the bar still forming)."""
     if factor < 1:
         raise ValueError("aggregation factor must be at least 1")
     if factor == 1 or not bars:
         return list(bars)
-    width = (bars[0].end - bars[0].start) * factor
+    width = base_width * factor
     merged: list[Bar] = []
     group: list[Bar] = []
     for bar in bars:

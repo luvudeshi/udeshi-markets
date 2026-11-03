@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from collections.abc import Iterator
+from importlib import metadata
 from typing import Any
 
+import httpx2
 import pytest
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.testclient import TestClient
@@ -14,11 +17,16 @@ from starlette.websockets import WebSocketDisconnect
 
 from udeshi_api.main import create_app
 from udeshi_api.routes import health, markets, simulations, stream
-from udeshi_api.sessions import MANUAL_TRADER_ID, SessionManager
+from udeshi_api.sessions import MANUAL_TRADER_ID, LiveSession, SessionManager
 from udeshi_api.settings import Settings
 from udeshi_markets import OrderRequest, Side
 
 ONE_MARKET = {"instruments": [{"symbol": "ACME", "reference_price": 1.00, "tick_size": 0.01}]}
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
 
 
 @pytest.fixture
@@ -66,7 +74,7 @@ def started_paused(client: TestClient, **body: Any) -> str:
 def test_health(client: TestClient) -> None:
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.2.0"}
+    assert response.json() == {"status": "ok", "version": metadata.version("udeshi-markets")}
 
 
 def test_every_handler_is_async() -> None:
@@ -92,6 +100,13 @@ def test_unknown_routes_use_the_error_format(client: TestClient) -> None:
     assert response.status_code == 404
     assert error_code(response) == "unknown_simulation"
     assert client.get("/api/nothing-here").json()["error"]["code"] == "not_found"
+
+
+def test_method_not_allowed_lists_every_allowed_method(client: TestClient) -> None:
+    response = client.put("/api/simulations")
+    assert response.status_code == 405
+    assert error_code(response) == "http_error"
+    assert response.headers["allow"] == "GET, POST"
 
 
 # ---- Simulation lifecycle --------------------------------------------------------------------
@@ -122,12 +137,51 @@ def test_create_with_defaults_and_list(client: TestClient) -> None:
         ({"instruments": []}, "validation_error"),
         ({"instruments": [{"symbol": "X", "reference_price": 1.005}]}, "invalid_configuration"),
         ({"bar_interval_seconds": 5000, "duration_seconds": 10}, "invalid_configuration"),
+        ({"bar_interval_seconds": 0.0001}, "validation_error"),  # Below 1 ms.
+        ({"duration_seconds": 7 * 24 * 3600}, "invalid_configuration"),  # 5 x 604800 bars.
+        ({"instruments": [{"symbol": "X", "reference_price": 1e300}]}, "invalid_configuration"),
     ],
 )
 def test_create_validation(client: TestClient, body: dict[str, Any], code: str) -> None:
     response = client.post("/api/simulations", json=body)
     assert response.status_code == 422
     assert error_code(response) == code
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"bar_interval_seconds": Infinity}',
+        b'{"bar_interval_seconds": 1e400}',  # Parses as infinity.
+        b'{"duration_seconds": NaN}',
+        b'{"instruments": [{"symbol": "X", "reference_price": Infinity}]}',
+    ],
+)
+def test_create_rejects_non_finite_numbers(client: TestClient, raw: bytes) -> None:
+    response = client.post(
+        "/api/simulations", content=raw, headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 422
+    assert error_code(response) == "validation_error"
+
+
+def test_bar_budget_bounds_the_work_of_a_long_simulation() -> None:
+    """Closing bars costs time and memory per bar, so a simulation may produce only so many:
+    a week of one-second bars across five markets would be three million."""
+    settings = Settings(tick_seconds=0.01, max_bars_per_simulation=1_000)
+    with TestClient(create_app(settings)) as client:
+        assert create(client, **ONE_MARKET, duration_seconds=1000)["state"] == "created"
+        response = client.post("/api/simulations", json={**ONE_MARKET, "duration_seconds": 1001})
+        assert response.status_code == 422
+        assert "1001 bars" in response.json()["error"]["message"]
+
+
+def test_live_sessions_keep_a_bounded_tape(client: TestClient) -> None:
+    simulation_id = create(client, **ONE_MARKET)["id"]
+    manager = client.app.state.sessions  # type: ignore[attr-defined]
+    assert isinstance(manager, SessionManager)
+    limit = manager.get(simulation_id).simulation.config.trade_history_limit
+    assert limit == Settings().trade_history_limit
 
 
 def test_lifecycle_transitions_and_conflicts(client: TestClient) -> None:
@@ -182,6 +236,44 @@ def test_delete_and_eviction() -> None:
         assert client.delete(f"/api/simulations/{third}").status_code == 204
         assert client.get(f"/api/simulations/{third}").status_code == 404
         assert client.get("/api/simulations").json()[0]["active"] is True  # Falls back.
+
+
+def test_eviction_prefers_finished_sessions_then_the_oldest() -> None:
+    with TestClient(create_app(Settings(tick_seconds=0.01, max_sessions=2))) as client:
+        running = create(client, **ONE_MARKET)["id"]
+        action(client, running, "start")
+        stopped = create(client, **ONE_MARKET)["id"]
+        action(client, stopped, "start")
+        action(client, stopped, "stop")
+        newest = create(client, **ONE_MARKET)["id"]
+        ids = [s["id"] for s in client.get("/api/simulations").json()]
+        assert ids == [running, newest]  # The stopped one went first, though it was younger.
+        # A created-but-unstarted session is kept like a running one, so the next create
+        # evicts the oldest session rather than the one its creator is about to start.
+        latest = create(client, **ONE_MARKET)["id"]
+        assert [s["id"] for s in client.get("/api/simulations").json()] == [newest, latest]
+
+
+@pytest.mark.anyio
+async def test_concurrent_creates_each_return_a_registered_session() -> None:
+    """create() never awaits, so no other request can evict a session between its creation and
+    the response that reports it (which happened when eviction awaited the victim's runner)."""
+    assert not inspect.iscoroutinefunction(SessionManager.create)
+    app = create_app(Settings(tick_seconds=0.01, max_sessions=2))
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as http:
+        for _ in range(2):
+            started = (await http.post("/api/simulations", json=ONE_MARKET)).json()["id"]
+            assert (await http.post(f"/api/simulations/{started}/start")).status_code == 200
+        responses = await asyncio.gather(
+            *(http.post("/api/simulations", json=ONE_MARKET) for _ in range(2))
+        )
+        created = [response.json()["id"] for response in responses]
+        listed = [s["id"] for s in (await http.get("/api/simulations")).json()]
+        assert sorted(listed) == sorted(created)
+        manager = app.state.sessions
+        assert isinstance(manager, SessionManager)
+        await manager.shutdown()
 
 
 # ---- Manual trading --------------------------------------------------------------------------
@@ -274,6 +366,20 @@ def test_open_orders_and_cancel(client: TestClient) -> None:
     assert client.get("/api/markets/ACME/orders").json() == []
 
 
+def test_cancel_rejects_unrepresentable_order_ids(client: TestClient) -> None:
+    simulation_id = started_paused(client)
+    for order_id in (-1, 0, 1 << 64):
+        response = client.delete(f"/api/markets/ACME/orders/{order_id}")
+        assert response.status_code == 422, order_id
+        assert error_code(response) == "validation_error"
+    for order_id in (1 << 63, (1 << 64) - 1):  # Representable, but no such order.
+        response = client.delete(f"/api/markets/ACME/orders/{order_id}")
+        assert response.status_code == 404
+        assert error_code(response) == "order_not_found"
+    summary = client.get(f"/api/simulations/{simulation_id}").json()["summary"]
+    assert summary["cancels_requested"] == 2  # Only the requests that reached the kernel.
+
+
 def test_cannot_cancel_another_participants_order(client: TestClient) -> None:
     simulation_id = started_paused(client)
     manager = client.app.state.sessions  # type: ignore[attr-defined]
@@ -310,6 +416,23 @@ def test_history_interval_validation_and_aggregation(client: TestClient) -> None
     assert error_code(invalid) == "invalid_interval"
 
 
+@pytest.mark.parametrize(
+    ("interval", "code"),
+    [
+        ("1e-10", "invalid_interval"),  # Rounds to 0 ns.
+        ("0.5", "invalid_interval"),  # Narrower than the base bars.
+        ("inf", "validation_error"),
+        ("nan", "validation_error"),
+        ("1e300", "validation_error"),  # Overflows when converted to nanoseconds.
+    ],
+)
+def test_history_rejects_unusable_intervals(client: TestClient, interval: str, code: str) -> None:
+    started_paused(client)
+    response = client.get("/api/markets/ACME/history", params={"interval_seconds": interval})
+    assert response.status_code == 422
+    assert error_code(response) == code
+
+
 def test_prices_are_rounded_to_the_tick_grid(client: TestClient) -> None:
     create(client, instruments=[{"symbol": "NICKEL", "reference_price": 0.15, "tick_size": 0.05}])
     simulation_id = client.get("/api/simulations").json()[-1]["id"]
@@ -324,13 +447,31 @@ def test_prices_are_rounded_to_the_tick_grid(client: TestClient) -> None:
 # ---- WebSocket stream ------------------------------------------------------------------------
 
 
+def receive_snapshot(ws: Any) -> dict[str, Any]:
+    message: dict[str, Any] = ws.receive_json()
+    assert message["type"] == "snapshot", message
+    return message
+
+
+def receive_until(ws: Any, kind: str) -> list[dict[str, Any]]:
+    received: list[dict[str, Any]] = []
+    while not received or received[-1]["type"] != kind:
+        received.append(ws.receive_json())
+    return received
+
+
 def test_stream_snapshot_then_live_updates(client: TestClient) -> None:
     simulation_id = started_paused(client)
+    order(client, "ACME", side="buy", price=0.99, quantity=4)
     with client.websocket_connect(f"/api/simulations/{simulation_id}/stream?symbols=ACME") as ws:
-        snapshot = [ws.receive_json() for _ in range(4)]
-        assert [m["type"] for m in snapshot] == ["simulation", "book", "market", "trades"]
-        assert snapshot[0]["state"] == "paused"
-        assert snapshot[1]["symbol"] == "ACME"
+        snapshot = receive_snapshot(ws)
+        assert snapshot["simulation"]["state"] == "paused"
+        [market] = snapshot["markets"]
+        assert set(market) == {"symbol", "book", "market", "trades", "bars"}
+        assert market["symbol"] == "ACME"
+        assert market["book"]["bids"] == [
+            {"price": 0.99, "price_ticks": 99, "quantity": 4, "orders": 1}
+        ]
         order(client, "ACME", side="sell", price=1.01, quantity=3)
         order(client, "ACME", side="buy", price=1.01, quantity=2)
         received: list[dict[str, Any]] = []
@@ -350,11 +491,68 @@ def test_stream_is_quiet_while_paused(client: TestClient) -> None:
     assert isinstance(manager, SessionManager)
     session = manager.get(simulation_id)
     subscriber = session.hub.subscribe(None)
+    assert subscriber.queue.qsize() == 1  # The snapshot.
+    subscriber.queue.get_nowait()
     for _ in range(5):
         session.publish_changes()  # What the runner does on every tick.
     assert subscriber.queue.qsize() == 0  # Nothing changed, so nothing was sent.
     session.set_speed(3.0)
     assert subscriber.queue.qsize() == 1
+
+
+def test_no_payloads_are_built_without_subscribers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started_paused(client)
+
+    def fail(*_: object) -> list[object]:
+        raise AssertionError("built updates that nobody would receive")
+
+    monkeypatch.setattr(LiveSession, "_updates", fail)
+    order(client, "ACME", side="sell", price=1.01, quantity=3)
+    order(client, "ACME", side="buy", price=1.01, quantity=2)
+
+
+def test_stream_resyncs_after_reset(client: TestClient) -> None:
+    """A reset invalidates everything a client holds (trade ids even restart at 1), so the
+    stream sends a fresh snapshot rather than leaving the old book and tape on screen."""
+    simulation_id = started_paused(client)
+    order(client, "ACME", side="sell", price=1.01, quantity=3)
+    order(client, "ACME", side="buy", price=1.01, quantity=1)
+    with client.websocket_connect(f"/api/simulations/{simulation_id}/stream") as ws:
+        [market] = receive_snapshot(ws)["markets"]
+        assert market["book"]["asks"]
+        assert market["trades"]
+        action(client, simulation_id, "reset")
+        snapshot = receive_until(ws, "snapshot")[-1]
+        assert snapshot["simulation"]["state"] == "created"
+        [market] = snapshot["markets"]
+        assert market["book"]["asks"] == market["book"]["bids"] == []
+        assert market["trades"] == market["bars"] == []
+        assert market["market"]["last_price"] is None
+
+
+def test_a_jump_in_time_sends_recent_bars_and_counts_the_rest(client: TestClient) -> None:
+    simulation_id = started_paused(client, duration_seconds=1500)
+    with client.websocket_connect(f"/api/simulations/{simulation_id}/stream") as ws:
+        receive_snapshot(ws)
+        action(client, simulation_id, "step", events=1)  # Nothing queued: completes the run.
+        bars = receive_until(ws, "bars")[-1]
+        assert bars["omitted"] == 500
+        assert len(bars["bars"]) == 1000
+        assert bars["bars"][-1]["end_seconds"] == 1500.0
+    history = client.get("/api/markets/ACME/history", params={"limit": 10_000}).json()
+    assert len(history) == 1500  # The history endpoint has them all.
+
+
+def test_stream_ignores_binary_frames(client: TestClient) -> None:
+    simulation_id = started_paused(client)
+    with client.websocket_connect(f"/api/simulations/{simulation_id}/stream") as ws:
+        receive_snapshot(ws)
+        ws.send_bytes(b"\x00ping")
+        ws.send_text("hello")
+        order(client, "ACME", side="buy", price=0.99, quantity=1)
+        assert receive_until(ws, "book")[-1]["bids"][0]["quantity"] == 1
 
 
 def test_stream_rejects_unknown_simulation_and_symbols(client: TestClient) -> None:
@@ -376,8 +574,7 @@ def test_stream_rejects_unknown_simulation_and_symbols(client: TestClient) -> No
 def test_stream_announces_deletion(client: TestClient) -> None:
     simulation_id = create(client, **ONE_MARKET)["id"]
     with client.websocket_connect(f"/api/simulations/{simulation_id}/stream") as ws:
-        for _ in range(4):
-            ws.receive_json()
+        receive_snapshot(ws)
         assert client.delete(f"/api/simulations/{simulation_id}").status_code == 204
         messages: list[dict[str, Any]] = []
         while not messages or messages[-1]["type"] != "closed":

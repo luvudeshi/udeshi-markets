@@ -2,11 +2,12 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Path, Query, status
 
 from udeshi_api.deps import Sessions
 from udeshi_api.errors import ApiError
 from udeshi_api.schemas import (
+    MAX_DURATION_SECONDS,
     BarOut,
     CancelOut,
     MarketDetailOut,
@@ -18,11 +19,11 @@ from udeshi_api.schemas import (
     TradeOut,
 )
 from udeshi_api.serialization import (
-    aggregate_bars,
     bar_out,
     book_out,
     market_detail_out,
     market_out,
+    recent_bars,
     trade_out,
 )
 
@@ -85,7 +86,9 @@ async def get_trades(
 async def get_history(
     symbol: str,
     sessions: Sessions,
-    interval_seconds: Annotated[float | None, Query(gt=0)] = None,
+    interval_seconds: Annotated[
+        float | None, Query(gt=0, le=MAX_DURATION_SECONDS, allow_inf_nan=False)
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=10_000)] = 500,
     simulation_id: SimulationId = None,
 ) -> list[BarOut]:
@@ -97,16 +100,16 @@ async def get_history(
     factor = 1
     if interval_seconds is not None:
         requested = round(interval_seconds * 1_000_000_000)
-        if requested % base != 0:
+        if requested < base or requested % base != 0:
             raise ApiError(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "invalid_interval",
-                f"interval must be a multiple of the bar interval ({base / 1e9:g} s)",
+                f"interval must be a whole multiple of the bar interval ({base / 1e9:g} s)",
             )
         factor = requested // base
-    bars = aggregate_bars(session.simulation.recorder.bars(instrument), factor)
+    bars = recent_bars(session.simulation.recorder.bars(instrument), base, factor, limit)
     fmt = session.formats[instrument]
-    return [bar_out(bar, fmt) for bar in bars[-limit:]]
+    return [bar_out(bar, fmt) for bar in bars]
 
 
 @router.get("/{symbol}/orders")
@@ -127,7 +130,10 @@ async def submit_order(
 
 @router.delete("/{symbol}/orders/{order_id}")
 async def cancel_order(
-    symbol: str, order_id: int, sessions: Sessions, simulation_id: SimulationId = None
+    symbol: str,
+    order_id: Annotated[int, Path(ge=1, le=(1 << 64) - 1)],
+    sessions: Sessions,
+    simulation_id: SimulationId = None,
 ) -> CancelOut:
     """Cancels one of your resting orders."""
     return sessions.resolve(simulation_id).cancel(symbol, order_id)

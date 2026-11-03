@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Match, Route
 
 from udeshi_markets.simulation import SimulationStateError
 
@@ -37,6 +38,22 @@ def _body(code: str, message: str, details: Any | None = None) -> dict[str, Any]
     return {"error": error}
 
 
+def _allowed_methods(request: Request) -> str:
+    methods: set[str] = set()
+    pending: list[Any] = list(request.app.router.routes)
+    while pending:
+        route = pending.pop()
+        # FastAPI (0.162) wraps each included router; its own routes carry the full path.
+        nested = getattr(getattr(route, "original_router", None), "routes", None)
+        if nested is not None:
+            pending.extend(nested)
+        elif isinstance(route, Route) and route.methods:
+            match, _ = route.matches(request.scope)
+            if match is not Match.NONE:
+                methods |= route.methods
+    return ", ".join(sorted(methods))
+
+
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def api_error(_: Request, error: ApiError) -> JSONResponse:
@@ -62,9 +79,16 @@ def install_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_error(_: Request, error: StarletteHTTPException) -> JSONResponse:
+    async def http_error(request: Request, error: StarletteHTTPException) -> JSONResponse:
         code = "not_found" if error.status_code == 404 else "http_error"
-        return JSONResponse(_body(code, str(error.detail)), status_code=error.status_code)
+        headers = dict(error.headers or {})  # Keep the exception's headers.
+        if error.status_code == status.HTTP_405_METHOD_NOT_ALLOWED:
+            # RFC 9110 requires Allow on 405. Starlette lists only the first route matching the
+            # path, so list the methods of every route that matches it.
+            headers["Allow"] = _allowed_methods(request) or headers.get("Allow", "")
+        return JSONResponse(
+            _body(code, str(error.detail)), status_code=error.status_code, headers=headers
+        )
 
     @app.exception_handler(Exception)
     async def unexpected_error(request: Request, error: Exception) -> JSONResponse:

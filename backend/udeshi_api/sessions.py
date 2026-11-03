@@ -8,21 +8,23 @@ handler would run in a thread pool and break this, so none exist.)
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import secrets
 from collections import OrderedDict, deque
 from datetime import UTC, datetime
-from typing import Any
 
 from fastapi import status
 
 from udeshi_api.errors import ApiError, not_found
-from udeshi_api.hub import StreamHub
+from udeshi_api.hub import Message, StreamHub
 from udeshi_api.runner import LiveRunner
 from udeshi_api.schemas import (
     CancelOut,
     FillOut,
     OpenOrderOut,
+    OrderBookOut,
     OrderIn,
     OrderOut,
     SimulationOut,
@@ -41,6 +43,7 @@ from udeshi_api.serialization import (
 from udeshi_api.settings import Settings
 from udeshi_markets import OrderStatus, OrderType, SelfTradePrevention, Side, TimeInForce
 from udeshi_markets.simulation import (
+    Bar,
     CancelReport,
     CancelStatus,
     ChangeSet,
@@ -60,6 +63,15 @@ logger = logging.getLogger("udeshi_api.sessions")
 
 MANUAL_TRADER_ID = 1_000_000
 """Participant id of the API user. Simulated agents use ids below this."""
+
+SNAPSHOT_TRADES = 100
+"""Most recent trades per symbol in a stream snapshot."""
+SNAPSHOT_BARS = 100
+"""Most recent closed bars per symbol in a stream snapshot."""
+STREAM_BAR_LIMIT = 1_000
+"""Most bars per symbol in one ``bars`` update; earlier ones are counted in ``omitted``."""
+
+_FINISHED = frozenset({SimulationState.STOPPED, SimulationState.COMPLETED})
 
 _SIDES = {"buy": Side.BUY, "sell": Side.SELL}
 _TIME_IN_FORCE = {"gtc": TimeInForce.GOOD_TILL_CANCEL, "ioc": TimeInForce.IMMEDIATE_OR_CANCEL}
@@ -133,8 +145,8 @@ class LiveSession:
             return [self._trader]
 
         self._simulation = Simulation(config, participants, track_changes=True)
-        self._last_status: dict[str, Any] | None = None
-        self.hub = StreamHub(settings.stream_queue_size)
+        self._last_status: Message | None = None
+        self.hub = StreamHub(settings.stream_queue_size, self.snapshot_message)
         self.runner = LiveRunner(
             self,
             tick_seconds=settings.tick_seconds,
@@ -197,7 +209,11 @@ class LiveSession:
         await self.runner.stop()
         self._simulation.reset()
         self.error = None
-        self.publish_changes()
+        # The previous state no longer applies (trade ids even restart at 1), so incremental
+        # updates cannot express the change: every subscriber gets a fresh snapshot instead.
+        self._simulation.drain_changes()
+        self._last_status = self.status_message()
+        self.hub.resync_all()
 
     def step(self, events: int) -> int:
         if self._simulation.state is not SimulationState.PAUSED:
@@ -213,6 +229,13 @@ class LiveSession:
     async def close(self) -> None:
         await self.runner.stop()
         self.hub.close()
+
+    def discard(self) -> asyncio.Task[None] | None:
+        """Like ``close`` but without waiting: cancels the runner and returns its task (if it
+        was running) for the caller to await later."""
+        task = self.runner.cancel()
+        self.hub.close()
+        return task
 
     # ---- Manual trading ----------------------------------------------------------------------
     def submit(self, symbol: str, order: OrderIn) -> OrderOut:
@@ -318,10 +341,12 @@ class LiveSession:
             ),
         )
 
-    def status_message(self) -> dict[str, Any]:
+    def status_message(self) -> Message:
+        return {"type": "simulation", **self._status()}
+
+    def _status(self) -> Message:
         simulation = self._simulation
         return {
-            "type": "simulation",
             "id": self._id,
             "state": simulation.state.value,
             "time_seconds": to_seconds(simulation.now),
@@ -330,80 +355,91 @@ class LiveSession:
             "error": self.error,
         }
 
-    def snapshot_messages(self, symbols: frozenset[str] | None) -> list[dict[str, Any]]:
-        """Everything a new subscriber needs before incremental updates."""
-        messages = [self.status_message()]
-        exchange = self._simulation.exchange
-        for instrument, symbol in enumerate(self._simulation.config.symbols):
+    def snapshot_message(self, symbols: frozenset[str] | None) -> Message:
+        """Everything a client needs, replacing whatever it held. Sent first on every
+        connection, then again after a reset or when the client fell behind."""
+        simulation = self._simulation
+        exchange = simulation.exchange
+        recorder = simulation.recorder
+        markets = []
+        for instrument, symbol in enumerate(simulation.config.symbols):
             if symbols is not None and symbol not in symbols:
                 continue
             fmt = self.formats[instrument]
-            messages.append(self._book_message(instrument))
-            messages.append(
-                {"type": "market", **market_out(exchange, instrument, fmt).model_dump()}
-            )
-            trades = self._simulation.recorder.trades(instrument, 100)
-            messages.append(
+            markets.append(
                 {
-                    "type": "trades",
                     "symbol": symbol,
-                    "trades": [trade_out(t, fmt).model_dump() for t in trades],
+                    "book": self._book(instrument).model_dump(),
+                    "market": market_out(exchange, instrument, fmt).model_dump(),
+                    "trades": [
+                        trade_out(t, fmt).model_dump()
+                        for t in recorder.trades(instrument, SNAPSHOT_TRADES)
+                    ],
+                    "bars": [
+                        bar_out(b, fmt).model_dump()
+                        for b in recorder.bars(instrument)[-SNAPSHOT_BARS:]
+                    ],
                 }
             )
-        return messages
+        return {"type": "snapshot", "simulation": self._status(), "markets": markets}
 
     def publish_changes(self) -> None:
         changes = self._simulation.drain_changes()
+        batch: list[tuple[Message, str | None]] = []
         status_message = self.status_message()
         if status_message != self._last_status:  # Unchanged while paused: say nothing.
-            self.hub.publish(status_message)
+            batch.append((status_message, None))
             self._last_status = status_message
-        self._publish(changes)
+        if self.hub.subscriber_count:  # Payloads are built only if someone will receive them.
+            batch.extend(self._updates(changes))
+        self.hub.publish(batch)
 
-    def _publish(self, changes: ChangeSet) -> None:
+    def _updates(self, changes: ChangeSet) -> list[tuple[Message, str]]:
         symbols = self._simulation.config.symbols
         exchange = self._simulation.exchange
-        trades_by_instrument: dict[int, list[dict[str, Any]]] = {}
+        trades_by_instrument: dict[int, list[Message]] = {}
         for trade in changes.trades:
             fmt = self.formats[trade.instrument]
             trades_by_instrument.setdefault(trade.instrument, []).append(
                 trade_out(trade, fmt).model_dump()
             )
-        bars_by_instrument: dict[int, list[dict[str, Any]]] = {}
+        bars_by_instrument: dict[int, list[Bar]] = {}
         for bar in changes.bars:
-            bars_by_instrument.setdefault(bar.instrument, []).append(
-                bar_out(bar, self.formats[bar.instrument]).model_dump()
-            )
-        touched = sorted(changes.instruments | trades_by_instrument.keys())
-        for instrument in touched:
+            bars_by_instrument.setdefault(bar.instrument, []).append(bar)
+        updates: list[tuple[Message, str]] = []
+        for instrument in sorted(changes.instruments | trades_by_instrument.keys()):
             symbol = symbols[instrument]
             fmt = self.formats[instrument]
-            self.hub.publish(self._book_message(instrument), symbol)
-            self.hub.publish(
-                {"type": "market", **market_out(exchange, instrument, fmt).model_dump()}, symbol
+            updates.append(({"type": "book", **self._book(instrument).model_dump()}, symbol))
+            updates.append(
+                ({"type": "market", **market_out(exchange, instrument, fmt).model_dump()}, symbol)
             )
             if instrument in trades_by_instrument:
-                self.hub.publish(
-                    {
-                        "type": "trades",
-                        "symbol": symbol,
-                        "trades": trades_by_instrument[instrument],
-                    },
-                    symbol,
-                )
+                trades = trades_by_instrument[instrument]
+                updates.append(({"type": "trades", "symbol": symbol, "trades": trades}, symbol))
         for instrument, bars in sorted(bars_by_instrument.items()):
-            symbol = symbols[instrument]
-            self.hub.publish({"type": "bars", "symbol": symbol, "bars": bars}, symbol)
+            # A jump in simulated time (a step to the end, a fast runner tick) can close many
+            # bars at once. Clients get the most recent ones and a count of the rest, which the
+            # history endpoint serves.
+            shown = bars[-STREAM_BAR_LIMIT:]
+            fmt = self.formats[instrument]
+            message = {
+                "type": "bars",
+                "symbol": symbols[instrument],
+                "bars": [bar_out(bar, fmt).model_dump() for bar in shown],
+                "omitted": len(bars) - len(shown),
+            }
+            updates.append((message, symbols[instrument]))
+        return updates
 
-    def _book_message(self, instrument: int) -> dict[str, Any]:
-        book = book_out(
+    def _book(self, instrument: int) -> OrderBookOut:
+        return book_out(
             self._simulation.exchange,
             instrument,
             self._settings.stream_book_depth,
             self.formats[instrument],
             self._simulation.now,
         )
-        return {"type": "book", **book.model_dump()}
 
 
 def _reason(name: str) -> str | None:
@@ -415,14 +451,29 @@ class SessionManager:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._sessions: OrderedDict[str, LiveSession] = OrderedDict()
+        self._sessions: OrderedDict[str, LiveSession] = OrderedDict()  # Oldest first.
         self._active: str | None = None
+        self._retiring: set[asyncio.Task[None]] = set()
 
-    async def create(self, config: SimulationConfig, speed: float) -> LiveSession:
+    @property
+    def settings(self) -> Settings:
+        return self._settings
+
+    def create(self, config: SimulationConfig, speed: float) -> LiveSession:
+        """Registers a new session and makes it active. Synchronous on purpose: registering it,
+        evicting old sessions and the caller's response all see one consistent registry, with
+        no other request able to interleave."""
         session = LiveSession(secrets.token_hex(6), config, speed, self._settings)
         self._sessions[session.id] = session
         self._active = session.id
-        await self._evict()
+        while len(self._sessions) > self._settings.max_sessions:
+            victim = self._eviction_candidate()
+            del self._sessions[victim.id]
+            task = victim.discard()
+            if task is not None:  # Awaited at shutdown.
+                self._retiring.add(task)
+                task.add_done_callback(self._retiring.discard)
+            logger.info("evicted simulation %s", victim.id)
         logger.info("created simulation %s (%d instruments)", session.id, len(config.instruments))
         return session
 
@@ -458,19 +509,14 @@ class SessionManager:
             await session.close()
         self._sessions.clear()
         self._active = None
+        for task in list(self._retiring):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
-    async def _evict(self) -> None:
-        """Drops the oldest sessions beyond the limit, preferring finished ones, never the
-        active one."""
-        while len(self._sessions) > self._settings.max_sessions:
-            candidates = [s for s in self._sessions.values() if s.id != self._active]
-            finished = [
-                s
-                for s in candidates
-                if s.simulation.state
-                in (SimulationState.STOPPED, SimulationState.COMPLETED, SimulationState.CREATED)
-            ]
-            victim = (finished or candidates)[0]
-            del self._sessions[victim.id]
-            await victim.close()
-            logger.info("evicted simulation %s", victim.id)
+    def _eviction_candidate(self) -> LiveSession:
+        """The oldest stopped or completed session, else the oldest session; never the active
+        one. (A session that was created but not started yet is kept like a running one: its
+        creator is presumably about to start it.)"""
+        candidates = [s for s in self._sessions.values() if s.id != self._active]
+        finished = [s for s in candidates if s.simulation.state in _FINISHED]
+        return (finished or candidates)[0]
