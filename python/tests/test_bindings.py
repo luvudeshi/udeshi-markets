@@ -247,11 +247,11 @@ def test_recent_trades_are_oldest_first(exchange: Exchange) -> None:
     assert first == exchange.recent_trades(0)[0]
 
 
-def _self_trade_prevention_run() -> tuple[um.SubmitResult, um.BookSnapshot]:
+def _self_trade_prevention_run(resting: int = 5) -> tuple[um.SubmitResult, um.BookSnapshot]:
     """The same input every time: owner 1 rests two sells, then crosses its own best one."""
     ex = Exchange()
     ex.add_instrument(symbol="ACME", tick_size=0.01, reference_price=10_000)
-    ex.submit(limit(Side.SELL, 101, 5, owner=1))
+    ex.submit(limit(Side.SELL, 101, resting, owner=1))
     ex.submit(limit(Side.SELL, 102, 4, owner=2))
     ex.submit(limit(Side.BUY, 99, 3, owner=3))
     result = ex.submit(
@@ -322,6 +322,305 @@ def test_sequence_numbers_are_exposed(exchange: Exchange) -> None:
     second = exchange.submit(limit(Side.BUY, 100, 1))
     assert (first.sequence, second.sequence, second.trades[0].sequence) == (1, 2, 3)
     assert exchange.last_sequence == 3
+
+
+# ---- Every bound field, after a known scenario -----------------------------------------------
+#
+# The scenario is built so that the fields compared with each other differ, so a binding that
+# exposes the wrong C++ member (e.g. sequence as timestamp, high as low, bid as ask) fails.
+# Three ACME events first make order ids, trade ids and sequence numbers diverge.
+
+
+@dataclass
+class _Scenario:
+    exchange: Exchange
+    results: dict[str, um.SubmitResult]
+    cancel: um.CancelResult
+    book: um.BookSnapshot  # NOVA, before the self-trade-prevention step.
+    stats: um.MarketStatistics  # NOVA, before the self-trade-prevention step.
+    order: um.Order  # C, partially filled, before the self-trade-prevention step.
+
+
+def _nova_order(
+    owner: int, side: Side, price: int, quantity: int, timestamp: int, **extra: Any
+) -> OrderRequest:
+    return OrderRequest(
+        instrument=1,
+        side=side,
+        price=price,
+        quantity=quantity,
+        owner=owner,
+        timestamp=timestamp,
+        **extra,
+    )
+
+
+@pytest.fixture
+def scenario(exchange: Exchange) -> _Scenario:
+    results: dict[str, um.SubmitResult] = {}
+    results["P1"] = exchange.submit(
+        OrderRequest(instrument=0, side=Side.BUY, price=9_000, quantity=3, owner=31, timestamp=100)
+    )  # id 1, sequence 1
+    cancel = exchange.cancel(0, results["P1"].order_id)  # sequence 2
+    results["P3"] = exchange.submit(
+        OrderRequest(instrument=0, side=Side.BUY, price=9_000, quantity=0, owner=31)
+    )  # rejected: sequence 3, no id
+    stp_incoming = SelfTradePrevention.CANCEL_INCOMING
+    ioc = TimeInForce.IMMEDIATE_OR_CANCEL
+    results["A"] = exchange.submit(_nova_order(11, Side.SELL, 2_010, 7, 5_001))  # id 2, seq 4
+    results["B"] = exchange.submit(_nova_order(12, Side.SELL, 2_030, 4, 5_002))  # id 3, seq 5
+    results["C"] = exchange.submit(
+        _nova_order(13, Side.BUY, 1_990, 7, 5_003, self_trade_prevention=stp_incoming)
+    )  # id 4, seq 6
+    results["D"] = exchange.submit(_nova_order(14, Side.BUY, 2_030, 13, 5_004, time_in_force=ioc))
+    results["E"] = exchange.submit(_nova_order(15, Side.SELL, 1_990, 2, 5_005))  # id 6
+    results["F"] = exchange.submit(_nova_order(16, Side.SELL, 2_005, 3, 5_006))  # id 7
+    results["G"] = exchange.submit(_nova_order(17, Side.BUY, 2_005, 3, 5_007))  # id 8
+    results["H"] = exchange.submit(_nova_order(18, Side.BUY, 1_996, 1, 5_008))  # id 9
+    results["J"] = exchange.submit(_nova_order(19, Side.BUY, 1_990, 3, 5_009))  # id 10
+    results["K"] = exchange.submit(_nova_order(23, Side.SELL, 2_040, 6, 5_010))  # id 11
+    results["L"] = exchange.submit(_nova_order(21, Side.BUY, 1_980, 2, 5_011))  # id 12
+    book, stats, order = exchange.book_snapshot(1), exchange.statistics(1), exchange.order(1, 4)
+    assert order is not None
+    results["M"] = exchange.submit(
+        _nova_order(
+            23,
+            Side.BUY,
+            2_040,
+            1,
+            5_012,
+            self_trade_prevention=SelfTradePrevention.CANCEL_RESTING,
+        )
+    )  # id 13, seq 19: cancels K (seq 20), then rests
+    return _Scenario(exchange, results, cancel, book, stats, order)
+
+
+def _trade_fields(trade: um.Trade) -> tuple[object, ...]:
+    return (
+        trade.id,
+        trade.sequence,
+        trade.timestamp,
+        trade.instrument,
+        trade.price,
+        trade.quantity,
+        trade.aggressor_side,
+        trade.buy_order_id,
+        trade.sell_order_id,
+        trade.buyer,
+        trade.seller,
+        trade.aggressor_order_id,
+        trade.resting_order_id,
+    )
+
+
+def test_trade_fields(scenario: _Scenario) -> None:
+    buy, sell = Side.BUY, Side.SELL
+    trades = [*scenario.results["D"].trades, *scenario.results["E"].trades]
+    trades += scenario.results["G"].trades
+    assert [_trade_fields(t) for t in trades] == [
+        (1, 8, 5_004, 1, 2_010, 7, buy, 5, 2, 14, 11, 5, 2),
+        (2, 9, 5_004, 1, 2_030, 4, buy, 5, 3, 14, 12, 5, 3),
+        (3, 11, 5_005, 1, 1_990, 2, sell, 4, 6, 13, 15, 6, 4),
+        (4, 14, 5_007, 1, 2_005, 3, buy, 8, 7, 17, 16, 8, 7),
+    ]
+    assert scenario.exchange.recent_trades(1) == trades
+
+
+def _submit_fields(result: um.SubmitResult) -> tuple[object, ...]:
+    return (
+        result.order_id,
+        result.sequence,
+        result.status,
+        result.reject_reason,
+        result.cancel_reason,
+        result.requested_quantity,
+        result.filled_quantity,
+        result.resting_quantity,
+        result.cancelled_quantity,
+        len(result.trades),
+        len(result.resting_cancels),
+        result.accepted,
+    )
+
+
+def test_submit_result_fields(scenario: _Scenario) -> None:
+    rejected, resting = OrderStatus.REJECTED, OrderStatus.RESTING
+    filled, cancelled = OrderStatus.FILLED, OrderStatus.CANCELLED
+    ok, bad_quantity = RejectReason.NONE, RejectReason.INVALID_QUANTITY
+    none, no_liquidity = um.CancelReason.NONE, um.CancelReason.NO_LIQUIDITY
+    # order id, sequence, status, reject and cancel reasons, requested / filled / resting /
+    # cancelled quantity, trade count, resting-cancel count, accepted
+    expected = {
+        "P3": (0, 3, rejected, bad_quantity, none, 0, 0, 0, 0, 0, 0, False),
+        "A": (2, 4, resting, ok, none, 7, 0, 7, 0, 0, 0, True),
+        "D": (5, 7, cancelled, ok, no_liquidity, 13, 11, 0, 2, 2, 0, True),
+        "E": (6, 10, filled, ok, none, 2, 2, 0, 0, 1, 0, True),
+        "M": (13, 19, resting, ok, none, 1, 0, 1, 0, 0, 1, True),
+    }
+    assert {name: _submit_fields(scenario.results[name]) for name in expected} == expected
+
+
+def test_resting_cancel_fields(scenario: _Scenario) -> None:
+    (cancel,) = scenario.results["M"].resting_cancels
+    assert (
+        cancel.order_id,
+        cancel.sequence,
+        cancel.owner,
+        cancel.side,
+        cancel.price,
+        cancel.cancelled_quantity,
+        cancel.reason,
+    ) == (11, 20, 23, Side.SELL, 2_040, 6, um.CancelReason.SELF_TRADE_PREVENTION)
+    assert scenario.exchange.last_sequence == 20
+
+
+def test_cancel_result_fields(scenario: _Scenario) -> None:
+    cancel = scenario.cancel
+    assert (
+        cancel.outcome,
+        cancel.sequence,
+        cancel.order_id,
+        cancel.owner,
+        cancel.side,
+        cancel.price,
+        cancel.cancelled_quantity,
+        cancel.cancelled,
+    ) == (CancelOutcome.CANCELLED, 2, 1, 31, Side.BUY, 9_000, 3, True)
+
+
+def test_order_fields(scenario: _Scenario) -> None:
+    order = scenario.order
+    assert (
+        order.id,
+        order.owner,
+        order.instrument,
+        order.side,
+        order.self_trade_prevention,
+        order.price,
+        order.original_quantity,
+        order.remaining_quantity,
+        order.sequence,
+        order.timestamp,
+        order.filled_quantity,
+    ) == (4, 13, 1, Side.BUY, SelfTradePrevention.CANCEL_INCOMING, 1_990, 7, 5, 6, 5_003, 2)
+
+
+def test_market_statistics_fields(scenario: _Scenario) -> None:
+    stats = scenario.stats
+    assert (
+        stats.instrument,
+        stats.reference_price,
+        stats.last_price,
+        stats.open_price,
+        stats.high_price,
+        stats.low_price,
+        stats.volume,
+        stats.volume_saturated,
+        stats.trade_count,
+        stats.best_bid,
+        stats.best_ask,
+        stats.spread,
+        stats.bid_depth,
+        stats.ask_depth,
+        stats.resting_orders,
+        stats.current_price,
+    ) == (1, 2_000, 2_005, 2_010, 2_030, 1_990, 16, False, 4, 1_996, 2_040, 44, 11, 6, 5, 2_005)
+    notional = 2_010 * 7 + 2_030 * 4 + 1_990 * 2 + 2_005 * 3
+    assert stats.notional == notional
+    assert stats.vwap == notional / 16
+    assert stats.midprice == 2_018.0
+
+
+def test_book_snapshot_and_level_fields(scenario: _Scenario) -> None:
+    book = scenario.book
+    assert book.instrument == 1
+    levels = [
+        [(v.price, v.quantity, v.order_count) for v in side] for side in (book.bids, book.asks)
+    ]
+    assert levels == [[(1_996, 1, 1), (1_990, 8, 2), (1_980, 2, 1)], [(2_040, 6, 1)]]
+    spec = scenario.exchange.instrument(1)
+    assert (spec.symbol, spec.tick_size, spec.reference_price) == ("NOVA", 0.05, 2_000)
+
+
+def test_value_types_with_different_fields_are_unequal(scenario: _Scenario) -> None:
+    first, second = scenario.results["D"].trades
+    assert first != second
+    assert scenario.book.bids[0] != scenario.book.bids[1]
+    assert scenario.book != scenario.exchange.book_snapshot(1)  # M changed the book.
+    smaller, _ = _self_trade_prevention_run(resting=4)
+    larger, _ = _self_trade_prevention_run(resting=5)
+    assert smaller.resting_cancels[0] != larger.resting_cancels[0]
+
+
+def test_order_request_fields_round_trip() -> None:
+    request = OrderRequest(
+        instrument=3,
+        side=Side.SELL,
+        quantity=11,
+        type=OrderType.MARKET,
+        price=17,
+        time_in_force=TimeInForce.IMMEDIATE_OR_CANCEL,
+        owner=19,
+        self_trade_prevention=SelfTradePrevention.CANCEL_RESTING,
+        timestamp=23,
+    )
+    fields = (
+        "instrument",
+        "side",
+        "quantity",
+        "type",
+        "price",
+        "time_in_force",
+        "owner",
+        "self_trade_prevention",
+        "timestamp",
+    )
+    expected: tuple[object, ...] = (
+        3,
+        Side.SELL,
+        11,
+        OrderType.MARKET,
+        17,
+        TimeInForce.IMMEDIATE_OR_CANCEL,
+        19,
+        SelfTradePrevention.CANCEL_RESTING,
+        23,
+    )
+    assert tuple(getattr(request, name) for name in fields) == expected
+    request.instrument, request.quantity, request.price = 4, 12, 18
+    request.owner, request.timestamp = 20, 24
+    request.side, request.type = Side.BUY, OrderType.LIMIT
+    request.time_in_force = TimeInForce.GOOD_TILL_CANCEL
+    request.self_trade_prevention = SelfTradePrevention.CANCEL_INCOMING
+    assert tuple(getattr(request, name) for name in fields) == (
+        4,
+        Side.BUY,
+        12,
+        OrderType.LIMIT,
+        18,
+        TimeInForce.GOOD_TILL_CANCEL,
+        20,
+        SelfTradePrevention.CANCEL_INCOMING,
+        24,
+    )
+
+
+def test_default_depth_and_trade_limit(exchange: Exchange) -> None:
+    for tick in range(12):
+        exchange.submit(limit(Side.BUY, 1_000 - tick, 1))
+        exchange.submit(limit(Side.SELL, 2_000 + tick, 1))
+    snapshot = exchange.book_snapshot(0)
+    assert (len(snapshot.bids), len(snapshot.asks)) == (10, 10)
+    assert [level.price for level in snapshot.bids[:2]] == [1_000, 999]
+    deeper = exchange.book_snapshot(0, depth=12)
+    assert (len(deeper.bids), len(deeper.asks)) == (12, 12)
+    for _ in range(101):
+        exchange.submit(limit(Side.SELL, 1_500, 1))
+        exchange.submit(limit(Side.BUY, 1_500, 1))
+    recent = exchange.recent_trades(0)
+    assert len(recent) == 100
+    assert recent[-1].id == 101
+    assert recent[0].id == 2
 
 
 # ---- Property-based test through the bindings ------------------------------------------------
