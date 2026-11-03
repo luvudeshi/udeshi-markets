@@ -1,7 +1,8 @@
 """Type stubs for the C++ extension module (python/bindings/module.cpp).
 
 Kept in sync by python/tests/test_stubs.py, which checks that every public name in the
-module appears here and vice versa, and that constructors, equality and hashing match.
+module appears here and vice versa, and that signatures (parameter names, kinds, types and
+defaults), properties, constructors, equality and hashing match.
 
 Classes without a Python constructor (their instances come only from the engine) declare
 ``__init__(self, _: Never, /)``: no argument can satisfy the parameter, so constructing one is a
@@ -82,11 +83,11 @@ class OrderRequest:
         instrument: int,
         side: Side,
         quantity: int,
-        type: OrderType = ...,
+        type: OrderType = OrderType.LIMIT,
         price: int = 0,
-        time_in_force: TimeInForce = ...,
+        time_in_force: TimeInForce = TimeInForce.GOOD_TILL_CANCEL,
         owner: int = 0,
-        self_trade_prevention: SelfTradePrevention = ...,
+        self_trade_prevention: SelfTradePrevention = SelfTradePrevention.ALLOW,
         timestamp: int = 0,
     ) -> None: ...
 
