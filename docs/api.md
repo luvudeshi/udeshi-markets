@@ -17,8 +17,10 @@ Settings come from environment variables:
 | `UDESHI_TICK_SECONDS` | `0.05` | Live runner tick (update rate 1/tick). |
 | `UDESHI_MAX_SESSIONS` | `8` | Simulations kept in memory; the oldest finished ones are evicted beyond this. |
 | `UDESHI_MAX_EVENTS_PER_TICK` | `200000` | Cap that keeps a busy simulation from starving the event loop. |
-| `UDESHI_STREAM_QUEUE_SIZE` | `512` | Per-client WebSocket buffer (oldest dropped when full). |
+| `UDESHI_STREAM_QUEUE_SIZE` | `512` | Per-client WebSocket buffer, in messages. A client that falls further behind is sent a fresh snapshot. |
 | `UDESHI_STREAM_BOOK_DEPTH` | `15` | Levels per side in streamed books. |
+| `UDESHI_MAX_BARS` | `500000` | Most OHLCV bars a simulation may produce (instruments × duration ÷ bar interval). Larger requests get 422. |
+| `UDESHI_TRADE_HISTORY` | `10000` | Recent trades kept per instrument for the tape endpoint and stream snapshots. |
 | `UDESHI_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins. |
 
 ## Conventions
@@ -39,7 +41,8 @@ Settings come from environment variables:
   | --- | --- |
   | 404 | `unknown_simulation`, `no_active_simulation`, `unknown_symbol`, `order_not_found`, `not_found` |
   | 409 | `invalid_state` (e.g. pausing a simulation that is not running) |
-  | 422 | `validation_error` (with per-field `details`), `invalid_configuration`, `invalid_price`, `invalid_interval` |
+  | 405 | `http_error`, with an `Allow` header listing every method of the path |
+  | 422 | `validation_error` (with per-field `details`; also for infinities, NaN and out-of-range ids), `invalid_configuration` (including a bar budget above `UDESHI_MAX_BARS`), `invalid_price`, `invalid_interval` |
   | 500 | `internal_error` (logged with traceback; no internals in the response) |
 
 ## Endpoints
@@ -49,8 +52,8 @@ Settings come from environment variables:
 | Method & path | Body | Description |
 | --- | --- | --- |
 | `GET /api/simulations` | — | All simulations held in memory. |
-| `POST /api/simulations` | `SimulationCreate` | Creates a simulation (201) and makes it active. All fields are optional: `instruments` (`symbol`, `reference_price`, `tick_size`; defaults to ACME, NOVA, QUANT, ORBIT, VECTOR), `duration_seconds`, `seed`, `order_latency_ms`, `bar_interval_seconds`, `speed`. |
-| `GET /api/simulations/{id}` | — | State, simulated time, progress, speed, configuration, counters and run digest. |
+| `POST /api/simulations` | `SimulationCreate` | Creates a simulation (201) and makes it active. All fields are optional: `instruments` (`symbol`, `reference_price`, `tick_size`; defaults to ACME, NOVA, QUANT, ORBIT, VECTOR), `duration_seconds`, `seed`, `order_latency_ms`, `bar_interval_seconds` (at least 0.001), `speed`. Sessions beyond `UDESHI_MAX_SESSIONS` are evicted: stopped or completed ones first, then the oldest; never the active one. |
+| `GET /api/simulations/{id}` | — | State (`created`, `running`, `paused`, `stopped`, `completed` or `failed`, with `error` set), simulated time, progress, speed, configuration, counters and run digest. |
 | `DELETE /api/simulations/{id}` | — | Stops the simulation and drops it (204). Stream clients receive `{"type": "closed"}`. |
 | `POST /api/simulations/{id}/start` · `pause` · `resume` · `stop` · `reset` | — | Lifecycle transitions (409 when not allowed). |
 | `POST /api/simulations/{id}/speed` | `{"speed": 10}` | Simulated seconds per wall-clock second. |
@@ -76,8 +79,10 @@ same kernel path, digest and ownership checks as any agent's.
 
 `GET /api/simulations/{id}/stream?symbols=ACME,NOVA` (WebSocket)
 
-1. **Snapshot first.** On connect the server sends a `simulation` status, then for each
-   subscribed symbol a `book`, a `market` summary and the 100 most recent `trades`.
+1. **Snapshot first.** On connect the server sends one `snapshot` message:
+   `{"type": "snapshot", "simulation": {...status...}, "markets": [{"symbol", "book", "market",
+   "trades", "bars"}]}`, with the 100 most recent trades and closed bars per subscribed symbol.
+   A client replaces everything it holds with a snapshot.
 2. **Then incremental updates, once per runner tick, only when something changed:**
 
    | `type` | Payload |
@@ -86,14 +91,17 @@ same kernel path, digest and ownership checks as any agent's.
    | `book` | The same fields as the order-book endpoint, for a symbol whose book changed. |
    | `market` | The market summary for that symbol. |
    | `trades` | `symbol` and the new public trades. |
-   | `bars` | `symbol` and the newly closed OHLCV bars. |
+   | `bars` | `symbol`, the newly closed OHLCV bars, and `omitted`. A jump in simulated time (a step to the end, a fast tick) can close many bars at once: the message carries the newest 1,000 and counts the rest in `omitted`; the history endpoint has them all. |
    | `closed` | The simulation was deleted; the server then closes the socket. |
 
-3. **Close codes.** An unknown simulation closes with code `4404`, an unknown symbol with `4400`.
-   Client messages are ignored.
-4. **Back-pressure.** Each client has a bounded buffer. When it is full the *oldest* message is
-   dropped, so a slow client cannot stall the market or grow server memory. Books and market
-   summaries are full snapshots, so the next one repairs any gap.
+3. **No silent gaps.** Each client has a bounded buffer, so a slow client cannot stall the
+   market or grow server memory. Updates are queued one tick's batch at a time. When a client's
+   buffer cannot take a whole batch, its pending updates are discarded and replaced by a fresh
+   `snapshot`, which already includes everything it missed. Every client also receives a fresh
+   snapshot after a reset (trade ids restart at 1).
+4. **Close codes.** The server accepts the connection, then closes it with code `4404` for an
+   unknown simulation or `4400` for an unknown symbol, with a reason. (Closing before accepting
+   would reach clients as a bare HTTP 403.) Client messages, text or binary, are ignored.
 
 ## Concurrency model
 

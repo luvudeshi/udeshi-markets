@@ -6,10 +6,9 @@ environment for studying the resulting market behaviour.
 
 > Everything is simulated. No real money, brokerage accounts, or real-world order routing.
 
-**Status:** Phase 1 (the matching engine) is complete. Phase 2 (Python bindings, the
-discrete-event simulation kernel and the exchange API) is implemented and green in CI, and its
-review fixes are in progress. Trading agents, analytics and the frontend come next; see the
-[roadmap](docs/architecture.md#phase-status).
+**Status:** Phases 1 and 2 of 6 are complete: the matching engine, the Python bindings, the
+discrete-event simulation kernel and the exchange API. Trading agents, analytics and the
+frontend come next; see the [roadmap](docs/architecture.md#phase-status).
 
 ## Matching engine (C++20)
 

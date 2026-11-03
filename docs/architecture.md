@@ -97,8 +97,9 @@ flowchart LR
 * Manual orders from the API user go through the same kernel path, digest and ownership checks
   as any agent's. They are processed immediately at the current simulated time and published
   straight away.
-* The hub gives every WebSocket client its own bounded queue. A slow client loses its oldest
-  messages; it never slows the simulation or other clients.
+* The hub gives every WebSocket client its own bounded queue. A client that falls behind is
+  sent a fresh snapshot in place of the updates it missed; it never slows the simulation or
+  other clients, and never sees a silent gap.
 
 ## Repository layout
 
@@ -136,7 +137,7 @@ Later phases add the agents and market environment (under `python/udeshi_markets
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 1 | C++ matching engine, price-time priority, cancellation, tests | Done |
-| 2 | pybind11 bindings, exchange API, discrete-event loop | Implemented; review fixes in progress |
+| 2 | pybind11 bindings, exchange API, discrete-event loop | Done |
 | 3 | Trading agents, market dynamics, portfolio accounting | Planned |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Planned |
 | 5 | Frontend, WebSockets, visualisations | Planned |

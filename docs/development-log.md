@@ -8,7 +8,7 @@ What has been built, the decisions behind it, and what is next. The requirements
 | Phase | Scope | Status |
 | --- | --- | --- |
 | 1 | C++ matching engine, price-time priority, cancellation, tests | **Done.** CI green; 61/61 mutants killed on Linux and macOS. |
-| 2 | pybind11 bindings, exchange API, discrete-event loop, integration tests | **Implemented and green in CI** (9/9 jobs). An independent adversarial review is in progress; its findings must be triaged and fixed before the phase is closed. |
+| 2 | pybind11 bindings, exchange API, discrete-event loop, integration tests | **Done.** 68 review findings, all reproduced and fixed with tests. |
 | 3 | Trading agents, market dynamics, portfolio accounting | Not started |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Not started |
 | 5 | Next.js frontend, WebSocket integration, visualisations | Not started |
@@ -102,19 +102,59 @@ Documentation is in [matching-engine.md](matching-engine.md).
 * `Settings.from_environment` read slot descriptors instead of defaults; mypy caught it.
 * The paused runner re-sent identical status messages 20 times a second.
 
-**Verification so far:**
-* 111 Python tests (bindings including Hypothesis properties, stubs, RNG golden values, recorder,
-  kernel with a golden digest, API, WebSocket, runner, hub).
-* mypy `--strict` and ruff are clean.
-* CI is green on Linux and macOS.
-* The real server was exercised end to end, including the WebSocket from a browser.
+**Found by the adversarial review and fixed** (four lenses: bindings and build, kernel, API,
+tests; 68 findings, every one reproduced by an independent verifier before it was fixed):
+* **Bounded work.** A single request could make the server build tens of millions of empty bars
+  on the event loop and run out of memory. There is now a bar budget (500k per simulation in
+  the API, 10M in the kernel) and a 1 ms minimum interval; update payloads are built only for
+  subscribers; history aggregates only the tail it returns; live tapes are bounded.
+* **Stream protocol.** A reset left clients showing stale books. A slow client silently lost
+  trades and bars. Close codes 4404/4400 never reached real clients, and a binary frame killed
+  the stream. Now the snapshot is one message, sent again after a reset or when a client falls
+  behind; the server accepts the connection before closing it with a code; frames are ignored.
+* **Kernel correctness.**
+  * Trades at the exact end of a run were in no bar. A run now covers [0, D), and a stop at t
+    keeps the instant t.
+  * A failing participant callback left a half-notified run RUNNING; it now ends in a terminal
+    FAILED state.
+  * The re-entrancy guard missed `on_start` and `on_stop`, and could be cleared by nesting.
+  * Out-of-range ids crashed mid-dispatch after counters had changed.
+* **Information leaks.** The `NOT_OWNER` cancel status let participants map other participants'
+  orders; the public tape exposed the engine's global sequence number.
+* **Digest and RNG.** Wakeup tags were not length-prefixed (two different runs could share a
+  digest); the end of a run was not digested; RNG stream labels `3` and `"3"` collided; the
+  logarithm was up to 4.6 ulp off (now within 2).
+* **Bindings and build.**
+  * The exception translator leaked into every other pybind11 module in the process.
+  * `__eq__` broke Python's comparison protocol; the stubs allowed hashing and constructing
+    classes that support neither.
+  * `__version__` was not tied to the package version, and every engine symbol was exported.
+  * Build dependencies were unpinned. They are now pinned and recorded in `uv.lock`.
+  * The Dockerfile recompiled the engine on any backend edit.
+  * CI never compiled the bindings with `-Werror` or tested the installed wheel; a new `wheel`
+    job does both on Linux and macOS.
+* **API details.** Infinite or NaN inputs and unusable history intervals gave 500s; concurrent
+  creates could return an evicted session; 405 responses had no `Allow` header.
+* **Test gaps.** About 30, including multi-instrument trading, notification order, the context's
+  information boundary, end-of-run boundaries and RNG goldens for every distribution.
 
-**Open items to close Phase 2:**
-1. Triage the adversarial review (`phase2-adversarial-review` workflow), fix confirmed findings
-   with tests, and re-run CI.
-2. Update `docs/architecture.md` (phase table, repository layout) and the README (status,
-   Python / API / Docker quick start, example simulation).
-3. Write the Phase 2 report: what was implemented, decisions, limitations, documentation.
+**Verification:**
+* Python suite: bindings (with Hypothesis properties), stubs and signatures, RNG goldens,
+  recorder, kernel (`test_simulation.py`, plus `test_kernel_contract.py` for the review
+  fixes), the README example, the API, the WebSocket stream (including a real uvicorn server
+  with a real WebSocket client), the runner and the hub. Warnings are errors.
+* mypy `--strict` and ruff are clean.
+* CI runs the engine on Linux and macOS in debug, release and ASan+UBSan builds, plus the
+  Python suite, the installed-wheel tests and the Docker image.
+
+**Limitations carried forward:**
+* Bars are built eagerly, including empty ones. That is why there is a bar budget; storing only
+  non-empty bars would remove the need for it.
+* Order ids come from one global counter, as on many real venues, so the gap between a
+  participant's own ids reveals how many orders others had accepted in between.
+* Sessions live in memory only. Persistence arrives with PostgreSQL in Phase 4.
+* The live runner falls behind rather than skipping work when a simulation cannot keep up with
+  the requested speed.
 
 ## Working conventions
 

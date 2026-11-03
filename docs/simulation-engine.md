@@ -28,7 +28,14 @@ flowchart LR
 * Participants never act re-entrantly. `ctx.submit(...)` and `ctx.cancel(...)` *schedule* an
   arrival at `now + order_latency_ns`, even with zero latency. A participant reacting to a fill
   therefore never runs inside the exchange call that produced the fill.
-* Events scheduled after the configured `duration_ns` are never processed.
+* **A run of duration D covers simulated time [0, D).** An event scheduled at or after D is
+  never processed. A run stopped at time t covers [0, t]: everything that happened at the
+  instant t is kept, so the final bar ends at t + 1 ns.
+* Bad input fails in the participant's own call, before any state changes: an `OrderIntent`
+  whose values do not fit the engine's integer types, a wakeup with a non-integer delay or a
+  tag that is not an encodable string, or an id that is out of range. Values that fit but break
+  the exchange's rules (a zero quantity, an off-grid price) are rejected by the exchange, with a
+  reason, like any other order.
 
 | Event | Effect |
 | --- | --- |
@@ -41,7 +48,7 @@ flowchart LR
 | Method | Behaviour |
 | --- | --- |
 | `step(n)` | Processes up to `n` events. If none is left before the end time, the run completes. |
-| `run_until(t)` | Processes every event at or before `min(t, end)`, then moves the clock to that time even if nothing happened. With `max_events`, it stops early and leaves the clock at the last processed event. |
+| `run_until(t)` | Processes every event at or before `t` (and before the end time), then moves the clock to `min(t, end)` even if nothing happened. With `max_events` (at least 1), it stops early and leaves the clock at the last processed event. |
 | `run()` | Headless: starts if needed and runs to the end. Returns a `SimulationSummary`. |
 
 ### Lifecycle
@@ -61,11 +68,18 @@ stateDiagram-v2
     paused --> created: reset
     stopped --> created: reset
     completed --> created: reset
+    running --> failed: a callback raises
+    failed --> created: reset
 ```
 
 An invalid transition raises `SimulationStateError`; the API maps it to HTTP 409. `reset`
 rebuilds everything from the configuration: a new exchange, queue and recorder, and *fresh*
 participants from the participant factory. A reset run therefore reproduces the original exactly.
+
+**Failure.** If a participant callback (or the engine) raises while the simulation is changing,
+some participants may already have been told about an event and others not. The simulation
+then moves to `failed`, a terminal state: the exception propagates, is kept in
+`simulation.failure`, the recording is closed, and every further step is refused until a reset.
 
 ## Participants
 
@@ -89,8 +103,15 @@ participant wouldn't have.
 
 **Ownership-checked cancels.** At arrival the kernel looks up the order:
 * a missing order gives `NOT_FOUND`;
-* someone else's order gives `NOT_OWNER`, and the exchange is never touched;
+* someone else's order also gives `NOT_FOUND`, and the exchange is never touched, so cancels
+  cannot be used to discover other participants' orders (the digest still records which case
+  it was);
 * otherwise the order is cancelled.
+
+Order ids are assigned by the exchange from one global counter, as on many real venues, so the
+gap between two of a participant's own order ids reveals how many orders were accepted in
+between. The public tape does not carry the exchange's global sequence number, which would also
+reveal rejected and cancelled orders.
 
 **Notification order.**
 1. The executions and self-trade-prevention cancels caused by one submission are delivered in
@@ -99,13 +120,17 @@ participant wouldn't have.
 2. The submitter then receives its `OrderReport`.
 
 **External actions.** `submit_now` and `cancel_now` process an order or cancel immediately at
-the current time. The API uses them for the manual user. They refuse to run from inside a
-participant callback.
+the current time. The API uses them for the manual user.
+
+**No re-entrancy.** Every control method (`start`, `pause`, `resume`, `stop`, `reset`, `step`,
+`run_until`, `submit_now`, `cancel_now`) refuses to run from inside any participant callback,
+`on_start` and `on_stop` included.
 
 **Scripted participants.** `ScriptedParticipant` replays a fixed list of timed orders and
 cancels, which is useful for scenarios, tests and replays. A scripted cancel names an earlier
 scripted order by its position in the script, because exchange order ids are only known at
-runtime.
+runtime. A cancel whose time comes before its order has been reported is held until the report
+arrives; a cancel of a rejected order is not sent.
 
 ## Recording
 
@@ -118,7 +143,9 @@ Bars are half-open intervals `[k·w, (k+1)·w)`, and a trade belongs to the bar 
 falls in. Bars are therefore a pure function of the trade stream, independent of the order in
 which same-instant events are processed. An interval with no trades carries the previous close
 forward with zero volume; before the first trade, that close is the reference price. The final
-partial bar is closed when the run ends.
+partial bar is closed when the run ends, and nothing can be recorded afterwards. Bar volume
+always equals traded volume. Bars are built eagerly, so a simulation may record at most
+`MAX_BARS` (10 million) bars in total.
 
 For live publishing (`track_changes=True`), `drain_changes()` returns:
 * the books that changed;
@@ -133,8 +160,11 @@ For live publishing (`track_changes=True`), `drain_changes()` returns:
   * ids, sequence numbers, status and reasons, and quantities;
   * every trade and every self-trade-prevention cancel.
 
-  Two runs are identical exactly when their digests match. Manual API orders are hashed like
-  any other event. A golden digest for a fixed multi-participant scenario is pinned in the
+  * how and when the run ended.
+
+  Records have fixed sizes, and wakeup tags are length-prefixed, so different runs cannot
+  produce the same byte stream. Two runs are identical exactly when their digests match. Manual
+  API orders are hashed like any other event. A golden digest for a fixed multi-participant scenario is pinned in the
   tests and checked on Linux and macOS in CI.
 * **Random numbers** ([`rng.py`](../python/udeshi_markets/simulation/rng.py)).
   * Library-defined distributions such as `random.gauss` or NumPy `Generator` methods may
@@ -143,11 +173,13 @@ For live publishing (`track_changes=True`), `drain_changes()` returns:
   * `DeterministicRng` therefore uses SplitMix64 for raw 64-bit words and builds every
     distribution from exactly rounded IEEE operations: `+ − × ÷` and `sqrt`.
     * The logarithm is its own: `x = m·2ᵉ` with `m ∈ [√½, √2)`, and `ln m = 2·atanh(s)` summed
-      as a short series.
+      in Horner form, smallest term first, with ln 2 split in two parts. It is within 2 ulps of
+      a 60-digit reference (a test checks 4,000 inputs, including the hardest ones).
     * Normals use the Marsaglia polar method, which needs only `log` and `sqrt`.
     * Exponentials use inversion.
   * Each participant gets its own stream, `DeterministicRng.derive(seed, "participant", id)`,
-    so adding a participant doesn't perturb the others' randomness.
+    so adding a participant doesn't perturb the others' randomness. Labels are encoded with
+    their type, so the int `3` and the string `"3"` name different streams.
   * Golden values pin the streams across platforms and Python versions.
 * **No hidden nondeterminism.** Participants are started and notified in id order. No iteration
   over an unordered container decides event order. The C++ engine is deterministic by design
