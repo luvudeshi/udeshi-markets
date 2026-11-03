@@ -5,6 +5,15 @@ find_package(pybind11 3.0 CONFIG REQUIRED)
 
 pybind11_add_module(_engine MODULE bindings/module.cpp)
 target_link_libraries(_engine PRIVATE udeshi::engine udeshi_compile_options)
-target_compile_definitions(_engine PRIVATE UDESHI_VERSION="${PROJECT_VERSION}")
+# The module reports the version of the distribution it ships in: scikit-build-core passes the
+# version from pyproject.toml. A plain CMake build falls back to the CMake project version.
+if(DEFINED SKBUILD_PROJECT_VERSION_FULL)
+  set(UDESHI_MODULE_VERSION "${SKBUILD_PROJECT_VERSION_FULL}")
+elseif(DEFINED SKBUILD_PROJECT_VERSION)
+  set(UDESHI_MODULE_VERSION "${SKBUILD_PROJECT_VERSION}")
+else()
+  set(UDESHI_MODULE_VERSION "${PROJECT_VERSION}")
+endif()
+target_compile_definitions(_engine PRIVATE UDESHI_VERSION="${UDESHI_MODULE_VERSION}")
 
 install(TARGETS _engine LIBRARY DESTINATION udeshi_markets)

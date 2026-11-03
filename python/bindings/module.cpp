@@ -8,8 +8,11 @@
 //    out-of-range value; the engine still validates enum fields as a second line of defence.
 //  * C++ exceptions map to the closest Python exception: std::invalid_argument -> ValueError,
 //    std::out_of_range (unknown symbol / instrument) -> KeyError.
+//  * Value types with a C++ operator== compare by value in Python, return NotImplemented for
+//    other types (so `trade == None` is simply False), and are unhashable.
 
 #include <pybind11/native_enum.h>
+#include <pybind11/operators.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -183,20 +186,20 @@ void bind_value_types(py::module_& m) {
       .def_readonly("seller", &Trade::seller)
       .def_property_readonly("aggressor_order_id", &Trade::aggressor_order_id)
       .def_property_readonly("resting_order_id", &Trade::resting_order_id)
-      .def("__eq__", [](const Trade& a, const Trade& b) { return a == b; })
+      .def(py::self == py::self)
       .def("__repr__", [](const Trade& t) { return repr(t); });
 
   py::class_<LevelView>(m, "LevelView", "Aggregated quantity at one price level.")
       .def_readonly("price", &LevelView::price)
       .def_readonly("quantity", &LevelView::quantity)
       .def_readonly("order_count", &LevelView::order_count)
-      .def("__eq__", [](const LevelView& a, const LevelView& b) { return a == b; });
+      .def(py::self == py::self);
 
   py::class_<BookSnapshot>(m, "BookSnapshot", "Aggregated depth, best price first per side.")
       .def_readonly("instrument", &BookSnapshot::instrument)
       .def_readonly("bids", &BookSnapshot::bids)
       .def_readonly("asks", &BookSnapshot::asks)
-      .def("__eq__", [](const BookSnapshot& a, const BookSnapshot& b) { return a == b; });
+      .def(py::self == py::self);
 
   py::class_<RestingCancel>(m, "RestingCancel", "A resting order removed by self-trade prevention.")
       .def_readonly("order_id", &RestingCancel::order_id)
@@ -205,7 +208,8 @@ void bind_value_types(py::module_& m) {
       .def_readonly("side", &RestingCancel::side)
       .def_readonly("price", &RestingCancel::price)
       .def_readonly("cancelled_quantity", &RestingCancel::cancelled_quantity)
-      .def_readonly("reason", &RestingCancel::reason);
+      .def_readonly("reason", &RestingCancel::reason)
+      .def(py::self == py::self);
 
   py::class_<SubmitResult>(m, "SubmitResult", "Everything that happened because of one submission.")
       .def_readonly("order_id", &SubmitResult::order_id)
@@ -330,8 +334,13 @@ PYBIND11_MODULE(_engine, m) {
   m.attr("INVALID_ORDER_ID") = kInvalidOrderId;
 
   // An unknown symbol or instrument id is a lookup failure: KeyError reads better than the
-  // IndexError pybind11 would map std::out_of_range to by default.
-  py::register_exception_translator([](std::exception_ptr exception) {
+  // IndexError pybind11 would map std::out_of_range to by default. The translator is local to
+  // this module. A global one would live in pybind11's internals, which every pybind11 module
+  // of the same ABI in the process shares, and would turn their std::out_of_range into KeyError
+  // too (breaking, for example, iteration that relies on IndexError). That cross-module effect
+  // can only be observed with a second extension module, so it is checked by hand rather than
+  // in the test suite.
+  py::register_local_exception_translator([](std::exception_ptr exception) {
     try {
       if (exception) {
         std::rethrow_exception(exception);

@@ -37,6 +37,23 @@ UDESHI_WARNINGS_AS_ERRORS = "OFF"
 members = ["backend"]
 
 [tool.uv]
+# Exact versions for the isolated build environments, which uv.lock does not otherwise lock: the
+# compiled extension must be reproducible from the repository, not from whatever is newest on
+# PyPI. `uv build` reads this list; `uv sync --frozen` reads the copy recorded in uv.lock, so run
+# `uv lock` after changing it (CI checks with `uv sync --locked`). cmake and ninja are only pulled
+# in when no suitable system tools are found.
+build-constraint-dependencies = [
+  "scikit-build-core==1.1.2",
+  "pybind11==3.1.0",
+  "hatchling==1.33.0",
+  "packaging==26.3",
+  "pathspec==1.1.1",
+  "pluggy==1.7.0",
+  "tomlkit==0.15.2",
+  "trove-classifiers==2026.9.21.13",
+  "cmake==4.4.4",
+  "ninja==1.13.2",
+]
 # Rebuild the extension whenever the C++ sources or build files change.
 cache-keys = [
   { file = "pyproject.toml" },

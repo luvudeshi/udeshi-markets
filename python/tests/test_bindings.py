@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import enum
+import importlib.metadata
 import math
+import operator
+import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +27,7 @@ from udeshi_markets import (
     SelfTradePrevention,
     Side,
     TimeInForce,
+    _engine,
 )
 
 
@@ -89,7 +95,27 @@ def test_constants() -> None:
     assert um.MIN_TICK_SIZE == 1e-12
     assert um.MAX_TICK_SIZE == 1e12
     assert um.INVALID_ORDER_ID == 0
-    assert um.__version__ == "0.2.0"
+
+
+def test_module_version_is_the_distribution_version() -> None:
+    assert um.__version__ == importlib.metadata.version("udeshi-markets")
+
+
+def test_the_extension_exports_only_its_init_function() -> None:
+    """The statically linked engine must not leak udeshi:: symbols from the shared object,
+    where another library's copy of the same symbols could interpose on them."""
+    nm = shutil.which("nm")
+    if nm is None:
+        pytest.skip("nm is not available")
+    flags = ["-gU"] if sys.platform == "darwin" else ["-D", "--defined-only"]
+    listing = subprocess.run(
+        [nm, *flags, _engine.__file__], check=True, capture_output=True, text=True
+    ).stdout
+    names = [line.split()[-1] for line in listing.splitlines() if line.strip()]
+    if sys.platform == "darwin":
+        names = [name.removeprefix("_") for name in names]
+    assert "PyInit__engine" in names
+    assert [name for name in names if "udeshi" in name] == []
 
 
 def test_price_to_ticks_uses_the_exchange_rules() -> None:
@@ -219,6 +245,52 @@ def test_recent_trades_are_oldest_first(exchange: Exchange) -> None:
     assert [t.price for t in exchange.recent_trades(0, limit=2)] == [101, 102]
     first = exchange.recent_trades(0)[0]
     assert first == exchange.recent_trades(0)[0]
+
+
+def _self_trade_prevention_run() -> tuple[um.SubmitResult, um.BookSnapshot]:
+    """The same input every time: owner 1 rests two sells, then crosses its own best one."""
+    ex = Exchange()
+    ex.add_instrument(symbol="ACME", tick_size=0.01, reference_price=10_000)
+    ex.submit(limit(Side.SELL, 101, 5, owner=1))
+    ex.submit(limit(Side.SELL, 102, 4, owner=2))
+    ex.submit(limit(Side.BUY, 99, 3, owner=3))
+    result = ex.submit(
+        OrderRequest(
+            instrument=0,
+            side=Side.BUY,
+            price=102,
+            quantity=6,
+            owner=1,
+            self_trade_prevention=SelfTradePrevention.CANCEL_RESTING,
+        )
+    )
+    return result, ex.book_snapshot(0)
+
+
+def test_value_types_compare_by_value() -> None:
+    first, first_book = _self_trade_prevention_run()
+    second, second_book = _self_trade_prevention_run()
+    assert len(first.resting_cancels) == 1
+    assert len(first.trades) == 1
+    assert first.resting_cancels == second.resting_cancels
+    assert first.resting_cancels[0] is not second.resting_cancels[0]
+    assert first.trades == second.trades
+    assert first_book == second_book
+    assert first_book.bids[0] == second_book.bids[0]
+    assert first.trades[0] != second.resting_cancels[0]  # Different types are never equal.
+
+
+def test_value_types_follow_the_comparison_protocol() -> None:
+    result, book = _self_trade_prevention_run()
+    values: list[object] = [result.trades[0], result.resting_cancels[0], book, book.bids[0]]
+    for value in values:
+        assert operator.eq(value, None) is False, type(value).__name__
+        assert operator.ne(value, None) is True, type(value).__name__
+        assert operator.eq(value, "text") is False, type(value).__name__
+        assert None not in [value]
+        assert value in [None, value]
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(value)
 
 
 def test_lookup_errors_are_key_errors(exchange: Exchange) -> None:
