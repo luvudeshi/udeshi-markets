@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "udeshi/types.hpp"
@@ -43,7 +44,8 @@ struct RefResult {
   std::int64_t rested = 0;
   std::int64_t cancelled = 0;
   std::vector<RefTrade> trades;
-  std::vector<std::uint64_t> stp_cancelled_resting;
+  // (order id, quantity that was still resting) for each resting order removed by STP.
+  std::vector<std::pair<std::uint64_t, std::int64_t>> stp_cancelled_resting;
 };
 
 // L3 row used to compare full book state: (side, price, arrival-order position, id, remaining).
@@ -86,7 +88,7 @@ class ReferenceBook {
           stp_stop = true;
           break;
         }
-        result.stp_cancelled_resting.push_back(resting.id);
+        result.stp_cancelled_resting.emplace_back(resting.id, resting.remaining);
         orders_.erase(orders_.begin() + static_cast<std::ptrdiff_t>(*best));
         continue;
       }

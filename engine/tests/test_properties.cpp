@@ -272,12 +272,15 @@ TEST_P(RandomizedMatchingTest, MatchesReferenceAndPreservesInvariants) {
       ledger.on_accepted(result.order_id, op.request);
       resting_prices[result.order_id] = op.request.price;
 
-      std::vector<std::uint64_t> stp_ids;
+      std::vector<std::pair<std::uint64_t, std::int64_t>> stp_cancels;
       for (const RestingCancel& cancel : result.resting_cancels) {
-        stp_ids.push_back(cancel.order_id);
+        stp_cancels.emplace_back(cancel.order_id, cancel.cancelled_quantity);
+        ASSERT_EQ(cancel.reason, CancelReason::SelfTradePrevention);
+        ASSERT_EQ(cancel.owner, op.request.owner);
+        ASSERT_EQ(cancel.side, opposite(op.request.side));
         ledger.on_cancelled(cancel.order_id);
       }
-      ASSERT_EQ(stp_ids, expected.stp_cancelled_resting);
+      ASSERT_EQ(stp_cancels, expected.stp_cancelled_resting);
 
       std::vector<RefTrade> actual_trades;
       for (const Trade& trade : result.trades) {

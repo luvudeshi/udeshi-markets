@@ -84,6 +84,7 @@ TEST_F(MatchingEngineTest, SpecExampleBuySweepsTwoAskLevels) {
   EXPECT_EQ(buy.filled_quantity, 12);
   EXPECT_EQ(buy.resting_quantity, 0);
 
+  ASSERT_EQ(buy.trades.size(), 2u);
   EXPECT_EQ(buy.trades[0].sell_order_id, s1.order_id);
   EXPECT_EQ(buy.trades[1].sell_order_id, s2.order_id);
   for (const Trade& trade : buy.trades) {
@@ -512,6 +513,21 @@ TEST_F(MatchingEngineTest, StpCancelRestingClearsWholeLevelOfOwnOrders) {
   EXPECT_EQ(fills(buy), (std::vector<Fill>{{101, 5}}));
   EXPECT_EQ(buy.status, OrderStatus::Filled);
   EXPECT_TRUE(book().empty());
+}
+
+TEST_F(MatchingEngineTest, StpCancelRestingReportsRemainingNotOriginalQuantity) {
+  const auto own = engine_.submit(limit(Side::Sell, 100, 10, 7));
+  engine_.submit(limit(Side::Buy, 100, 4, 8));  // Partially fills `own`: 6 remain.
+  const auto buy = engine_.submit(
+      with_stp(limit(Side::Buy, 100, 3, 7), SelfTradePrevention::CancelResting));
+  ASSERT_EQ(buy.resting_cancels.size(), 1u);
+  EXPECT_EQ(buy.resting_cancels[0].order_id, own.order_id);
+  EXPECT_EQ(buy.resting_cancels[0].cancelled_quantity, 6);
+  EXPECT_EQ(buy.resting_cancels[0].owner, 7u);
+  EXPECT_EQ(buy.resting_cancels[0].side, Side::Sell);
+  EXPECT_EQ(buy.resting_cancels[0].price, 100);
+  EXPECT_TRUE(buy.trades.empty());
+  EXPECT_EQ(buy.status, OrderStatus::Resting);
 }
 
 TEST_F(MatchingEngineTest, StpCancelIncomingStopsMatchingAndCancelsRemainder) {
