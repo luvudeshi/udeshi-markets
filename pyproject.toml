@@ -68,6 +68,9 @@ cache-keys = [
 testpaths = ["python/tests", "backend/tests"]
 addopts = "-ra --strict-markers"
 filterwarnings = ["error"]
+# A hung test prints every thread's traceback and fails the run instead of blocking it.
+faulthandler_timeout = 60
+faulthandler_exit_on_timeout = true
 
 [tool.mypy]
 strict = true

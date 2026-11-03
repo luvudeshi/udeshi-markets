@@ -1,4 +1,8 @@
-"""FastAPI dependencies."""
+"""FastAPI dependencies.
+
+They are ``async`` like the handlers: FastAPI runs a synchronous dependency in a worker thread,
+and anything that reached the simulation from there would break its single-threaded model.
+"""
 
 from typing import Annotated
 
@@ -14,11 +18,11 @@ def _manager(app_state: object) -> SessionManager:
     return manager
 
 
-def get_sessions(request: Request) -> SessionManager:
+async def get_sessions(request: Request) -> SessionManager:
     return _manager(request.app.state)
 
 
-def get_sessions_ws(websocket: WebSocket) -> SessionManager:
+async def get_sessions_ws(websocket: WebSocket) -> SessionManager:
     return _manager(websocket.app.state)
 
 

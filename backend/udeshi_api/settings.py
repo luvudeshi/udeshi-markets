@@ -3,6 +3,9 @@
 import os
 from dataclasses import dataclass, field
 
+MAX_BOOK_DEPTH = 200
+"""Deepest order book served, per side (the order-book endpoint's ``depth`` limit)."""
+
 
 def _float(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -26,6 +29,7 @@ class Settings:
     """Messages buffered per WebSocket client. A client that falls further behind is sent a
     fresh snapshot instead of the updates it missed."""
     stream_book_depth: int = 15
+    """Levels per side in streamed books (at most the order-book endpoint's maximum)."""
     max_bars_per_simulation: int = 500_000
     """Cap on the OHLCV bars a simulation can produce (instruments x duration / bar interval),
     which bounds its memory and the work of closing bars when simulated time jumps."""
@@ -42,6 +46,11 @@ class Settings:
             raise ValueError("max_events_per_tick must be at least 1")
         if self.stream_queue_size < 1:
             raise ValueError("stream_queue_size must be at least 1")
+        if not 1 <= self.stream_book_depth <= MAX_BOOK_DEPTH:
+            # A negative depth would make every streamed book fail to build (and with it any
+            # order request that publishes one, after its order had executed); 0 would stream
+            # empty books.
+            raise ValueError(f"stream_book_depth must lie in [1, {MAX_BOOK_DEPTH}]")
         if self.max_bars_per_simulation < 1:
             raise ValueError("max_bars_per_simulation must be at least 1")
         if self.trade_history_limit < 1:

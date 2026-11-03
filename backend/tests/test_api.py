@@ -14,6 +14,7 @@ import pytest
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from wsclient import receive_close, receive_json, receive_snapshot, receive_until
 
 from udeshi_api.main import create_app
 from udeshi_api.routes import health, markets, simulations, stream
@@ -448,19 +449,6 @@ def test_prices_are_rounded_to_the_tick_grid(client: TestClient) -> None:
 # ---- WebSocket stream ------------------------------------------------------------------------
 
 
-def receive_snapshot(ws: Any) -> dict[str, Any]:
-    message: dict[str, Any] = ws.receive_json()
-    assert message["type"] == "snapshot", message
-    return message
-
-
-def receive_until(ws: Any, kind: str) -> list[dict[str, Any]]:
-    received: list[dict[str, Any]] = []
-    while not received or received[-1]["type"] != kind:
-        received.append(ws.receive_json())
-    return received
-
-
 def test_stream_snapshot_then_live_updates(client: TestClient) -> None:
     simulation_id = started_paused(client)
     order(client, "ACME", side="buy", price=0.99, quantity=4)
@@ -475,10 +463,8 @@ def test_stream_snapshot_then_live_updates(client: TestClient) -> None:
         ]
         order(client, "ACME", side="sell", price=1.01, quantity=3)
         order(client, "ACME", side="buy", price=1.01, quantity=2)
-        received: list[dict[str, Any]] = []
-        while not any(m["type"] == "trades" and m["trades"] for m in received):
-            received.append(ws.receive_json())
-        trades = next(m for m in received if m["type"] == "trades")
+        received = receive_until(ws, "trades")
+        trades = received[-1]
         assert [(t["price"], t["quantity"]) for t in trades["trades"]] == [(1.01, 2)]
         books = [m for m in received if m["type"] == "book"]
         assert books[-1]["asks"] == [
@@ -491,14 +477,18 @@ def test_stream_is_quiet_while_paused(client: TestClient) -> None:
     manager = client.app.state.sessions  # type: ignore[attr-defined]
     assert isinstance(manager, SessionManager)
     session = manager.get(simulation_id)
-    subscriber = session.hub.subscribe(None)
-    assert subscriber.queue.qsize() == 1  # The snapshot.
-    subscriber.queue.get_nowait()
+    # The session's runner keeps ticking on the client's event-loop thread, so every call goes
+    # through that thread too; calling from this thread would race the runner's ticks.
+    portal = client.portal
+    assert portal is not None
+    subscriber = portal.call(session.hub.subscribe, None)
+    assert portal.call(subscriber.queue.qsize) == 1  # The snapshot.
+    portal.call(subscriber.queue.get_nowait)
     for _ in range(5):
-        session.publish_changes()  # What the runner does on every tick.
-    assert subscriber.queue.qsize() == 0  # Nothing changed, so nothing was sent.
-    session.set_speed(3.0)
-    assert subscriber.queue.qsize() == 1
+        portal.call(session.publish_changes)  # What the runner does on every tick.
+    assert portal.call(subscriber.queue.qsize) == 0  # Nothing changed, so nothing was sent.
+    portal.call(session.set_speed, 3.0)
+    assert portal.call(subscriber.queue.qsize) == 1
 
 
 def test_no_payloads_are_built_without_subscribers(
@@ -561,14 +551,14 @@ def test_stream_rejects_unknown_simulation_and_symbols(client: TestClient) -> No
         pytest.raises(WebSocketDisconnect) as missing,
         client.websocket_connect("/api/simulations/nope/stream") as ws,
     ):
-        ws.receive_json()
+        receive_json(ws)
     assert missing.value.code == 4404
     simulation_id = create(client, **ONE_MARKET)["id"]
     with (
         pytest.raises(WebSocketDisconnect) as unknown,
         client.websocket_connect(f"/api/simulations/{simulation_id}/stream?symbols=ZZZ") as ws,
     ):
-        ws.receive_json()
+        receive_json(ws)
     assert unknown.value.code == 4400
 
 
@@ -577,10 +567,8 @@ def test_stream_announces_deletion(client: TestClient) -> None:
     with client.websocket_connect(f"/api/simulations/{simulation_id}/stream") as ws:
         receive_snapshot(ws)
         assert client.delete(f"/api/simulations/{simulation_id}").status_code == 204
-        messages: list[dict[str, Any]] = []
-        while not messages or messages[-1]["type"] != "closed":
-            messages.append(ws.receive_json())
-        assert messages[-1] == {"type": "closed"}
+        assert receive_until(ws, "closed")[-1] == {"type": "closed"}
+        assert receive_close(ws) == 1000  # The server ends the connection itself.
 
 
 def test_a_failed_run_is_reported_with_its_error(client: TestClient) -> None:

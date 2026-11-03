@@ -26,6 +26,7 @@ from udeshi_api.serialization import (
     recent_bars,
     trade_out,
 )
+from udeshi_api.settings import MAX_BOOK_DEPTH
 
 router = APIRouter(prefix="/api/markets", tags=["markets"])
 
@@ -57,7 +58,7 @@ async def get_market(
 async def get_order_book(
     symbol: str,
     sessions: Sessions,
-    depth: Annotated[int, Query(ge=1, le=200)] = 10,
+    depth: Annotated[int, Query(ge=1, le=MAX_BOOK_DEPTH)] = 10,
     simulation_id: SimulationId = None,
 ) -> OrderBookOut:
     session = sessions.resolve(simulation_id)
