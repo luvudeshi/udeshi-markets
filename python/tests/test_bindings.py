@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import enum
+import importlib.metadata
 import math
 import operator
+import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,6 +27,7 @@ from udeshi_markets import (
     SelfTradePrevention,
     Side,
     TimeInForce,
+    _engine,
 )
 
 
@@ -90,7 +95,27 @@ def test_constants() -> None:
     assert um.MIN_TICK_SIZE == 1e-12
     assert um.MAX_TICK_SIZE == 1e12
     assert um.INVALID_ORDER_ID == 0
-    assert um.__version__ == "0.2.0"
+
+
+def test_module_version_is_the_distribution_version() -> None:
+    assert um.__version__ == importlib.metadata.version("udeshi-markets")
+
+
+def test_the_extension_exports_only_its_init_function() -> None:
+    """The statically linked engine must not leak udeshi:: symbols from the shared object,
+    where another library's copy of the same symbols could interpose on them."""
+    nm = shutil.which("nm")
+    if nm is None:
+        pytest.skip("nm is not available")
+    flags = ["-gU"] if sys.platform == "darwin" else ["-D", "--defined-only"]
+    listing = subprocess.run(
+        [nm, *flags, _engine.__file__], check=True, capture_output=True, text=True
+    ).stdout
+    names = [line.split()[-1] for line in listing.splitlines() if line.strip()]
+    if sys.platform == "darwin":
+        names = [name.removeprefix("_") for name in names]
+    assert "PyInit__engine" in names
+    assert [name for name in names if "udeshi" in name] == []
 
 
 def test_price_to_ticks_uses_the_exchange_rules() -> None:
