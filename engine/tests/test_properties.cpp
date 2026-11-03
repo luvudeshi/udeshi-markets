@@ -1,40 +1,58 @@
 // Randomised property-based and differential tests for the matching engine.
 //
-// Each test case drives the engine with a long, seeded pseudo-random stream of submissions and
-// cancellations (limit / market / IOC, both sides, self-trade-prevention modes, invalid input)
-// and checks, after every operation:
+// Each stream drives the engine with a long, seeded pseudo-random sequence of submissions and
+// cancellations across one or more instruments: limit / market / IOC orders on both sides, all
+// self-trade-prevention modes, non-monotone timestamps, cancels of live, stale, never-issued
+// and wrong-instrument ids, and malformed input (bad quantities and prices, out-of-range enum
+// values, unknown instruments). After every operation it checks three independent things:
 //
-//   * Differential equivalence: every trade, every order outcome, and (periodically) the full
-//     L3 book state match a naive reference implementation exactly.
-//   * Economic invariants: no execution at a price worse than either party's limit; trades
-//     execute at the resting order's price; an order never executes more than its quantity;
-//     cancelled orders never trade; shares and cash are conserved across all participants.
-//   * Structural invariants: OrderBook::check_invariants() (cached totals, FIFO links,
-//     sequence ordering, id index, not crossed).
-//   * Sequencing: ids and sequence numbers are strictly increasing.
+//  1. Differential equivalence with ReferenceEngine (reference_engine.hpp), a naive model of
+//     the documented contract: every field of every result (ids, sequence numbers, status,
+//     reasons, quantities, trades, self-trade-prevention cancels) and the full L3 book.
+//
+//  2. Contract properties checked directly, so that a bug shared by engine and oracle would
+//     still be caught:
+//       * sequencing: each submit/cancel takes the next sequence number, and its trades and
+//         STP cancels take the following ones contiguously; order and trade ids are dense;
+//       * no execution at a price worse than either party's limit, and every execution at the
+//         resting order's price;
+//       * quantity accounting: for every order, filled + cancelled + still-resting quantity
+//         equals the submitted quantity, and per instrument and side the book's resting volume
+//         equals rested - filled-while-resting - cancelled. Shares can be neither created nor
+//         destroyed without one of these equations failing;
+//       * finished (filled or cancelled) orders never trade again, and the book contains an
+//         order exactly when the engine reported it as resting.
+//
+//  3. Structural invariants via OrderBook::check_invariants() and L2 aggregates.
 //
 // Generators use SplitMix64 rather than <random> distributions, whose output is
-// implementation-defined; this keeps failures reproducible on every platform.
+// implementation-defined; streams (and the golden digests below) are identical on every
+// platform.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
-#include <tuple>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "reference_book.hpp"
-#include "test_helpers.hpp"
+#include "reference_engine.hpp"
 #include "udeshi/matching_engine.hpp"
 
 namespace udeshi {
 namespace {
 
-using testing::ReferenceBook;
+using testing::RefCancel;
+using testing::ReferenceEngine;
 using testing::RefRow;
+using testing::RefStpCancel;
+using testing::RefSubmit;
 using testing::RefTrade;
 
 class SplitMix64 {
@@ -46,26 +64,56 @@ class SplitMix64 {
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     return z ^ (z >> 31);
   }
-  // Uniform-ish integer in [lo, hi]. The modulo bias is irrelevant for test generation.
+  // Integer in [lo, hi]. The modulo bias is irrelevant for test generation.
   std::int64_t between(std::int64_t lo, std::int64_t hi) {
     return lo + static_cast<std::int64_t>(next() % static_cast<std::uint64_t>(hi - lo + 1));
   }
-  bool chance(int percent) { return between(0, 99) < percent; }
+  // True with probability per_mille / 1000.
+  bool chance(int per_mille) { return between(0, 999) < per_mille; }
 
  private:
   std::uint64_t state_;
 };
 
-struct StreamConfig {
-  std::uint64_t seed;
-  int operations;
-  std::int64_t price_half_width;  // Narrow => deep FIFO queues; wide => many levels.
-  int owners;                     // Few owners => frequent self-trade-prevention events.
+// ---- Stream generation ---------------------------------------------------------------------
+
+enum class Profile {
+  Narrow,    // Prices within a few ticks: deep FIFO queues, frequent self-trade prevention.
+  Moderate,  // Two instruments, moderate dispersion.
+  Wide,      // Three instruments, sparse books with many levels.
+  Deep,      // Passive-heavy flow growing a book of thousands of orders (several pool chunks),
+             // boundary prices (1 and kMaxPrice) and rare maximum-size market sweeps.
 };
 
+struct StreamConfig {
+  Profile profile;
+  std::uint64_t seed;
+  int operations;
+};
+
+struct ProfileParams {
+  const char* name;
+  std::int64_t price_half_width;
+  int owners;       // Owner ids are drawn from [0, owners]; 0 is anonymous.
+  int instruments;
+  int cancel_per_mille;
+  int market_per_mille;
+  int ioc_per_mille;
+  int check_every;  // Full L3 / invariant check cadence.
+};
+
+ProfileParams params(Profile profile) {
+  switch (profile) {
+    case Profile::Narrow: return {"narrow", 3, 3, 1, 250, 80, 70, 1};
+    case Profile::Moderate: return {"moderate", 25, 8, 2, 250, 80, 70, 1};
+    case Profile::Wide: return {"wide", 400, 20, 3, 250, 80, 70, 1};
+    case Profile::Deep: return {"deep", 300, 30, 1, 50, 30, 20, 250};
+  }
+  return {"?", 0, 0, 0, 0, 0, 0, 1};
+}
+
 std::ostream& operator<<(std::ostream& os, const StreamConfig& c) {
-  return os << "seed=" << c.seed << " ops=" << c.operations << " width=" << c.price_half_width
-            << " owners=" << c.owners;
+  return os << params(c.profile).name << "/seed=" << c.seed << "/ops=" << c.operations;
 }
 
 enum class OpKind { Submit, Cancel };
@@ -73,322 +121,632 @@ enum class OpKind { Submit, Cancel };
 struct Operation {
   OpKind kind = OpKind::Submit;
   OrderRequest request;
+  InstrumentId cancel_instrument = 0;
   OrderId cancel_id = kInvalidOrderId;
 };
 
-// Generates the next operation. Cancels mostly target orders that are actually resting (taken
-// from the reference book) but sometimes target stale or never-issued ids.
-Operation next_operation(SplitMix64& rng, const StreamConfig& config, std::int64_t& mid,
-                         const ReferenceBook& reference, OrderId next_id_hint) {
-  Operation op;
-  mid = std::clamp<std::int64_t>(mid + rng.between(-1, 1), 200, 5000);
-  const int roll = static_cast<int>(rng.between(0, 99));
-  if (roll < 25) {
-    op.kind = OpKind::Cancel;
-    const auto& resting = reference.orders();
-    if (!resting.empty() && rng.chance(85)) {
-      op.cancel_id = resting[static_cast<std::size_t>(
-                                 rng.between(0, static_cast<std::int64_t>(resting.size()) - 1))]
-                         .id;
+class StreamGenerator {
+ public:
+  explicit StreamGenerator(const StreamConfig& config)
+      : config_(config),
+        params_(params(config.profile)),
+        rng_(config.seed),
+        mids_(static_cast<std::size_t>(params_.instruments), 1000) {}
+
+  Operation next(const ReferenceEngine& reference) {
+    Operation op;
+    const auto instrument =
+        static_cast<InstrumentId>(rng_.between(0, params_.instruments - 1));
+    std::int64_t& mid = mids_[instrument];
+    mid = std::clamp<std::int64_t>(mid + rng_.between(-1, 1), 400, 5000);
+
+    if (rng_.chance(params_.cancel_per_mille)) {
+      op.kind = OpKind::Cancel;
+      op.cancel_instrument = instrument;
+      const auto resting = reference.resting_ids(instrument);
+      if (!resting.empty() && rng_.chance(850)) {
+        op.cancel_id = resting[static_cast<std::size_t>(
+            rng_.between(0, static_cast<std::int64_t>(resting.size()) - 1))];
+        if (params_.instruments > 1 && rng_.chance(100)) {  // Right id, wrong instrument.
+          op.cancel_instrument = (instrument + 1) % static_cast<InstrumentId>(params_.instruments);
+        }
+      } else {
+        op.cancel_id = static_cast<OrderId>(
+            rng_.between(0, static_cast<std::int64_t>(reference.next_order_id()) + 3));
+      }
+      if (rng_.chance(10)) {
+        op.cancel_instrument = static_cast<InstrumentId>(params_.instruments + 5);
+      }
+      return op;
+    }
+
+    OrderRequest& r = op.request;
+    r.instrument = instrument;
+    r.owner = static_cast<TraderId>(rng_.between(0, params_.owners));
+    r.side = rng_.chance(500) ? Side::Buy : Side::Sell;
+    r.quantity = rng_.chance(50) ? rng_.between(200, 2000) : rng_.between(1, 100);
+    const int stp_roll = static_cast<int>(rng_.between(0, 99));
+    r.self_trade_prevention = stp_roll < 60   ? SelfTradePrevention::Allow
+                              : stp_roll < 80 ? SelfTradePrevention::CancelResting
+                                              : SelfTradePrevention::CancelIncoming;
+    // Deliberately unrelated to arrival order: priority must follow arrival, not timestamps.
+    r.timestamp = rng_.between(0, 1'000'000'000);
+
+    const int type_roll = static_cast<int>(rng_.between(0, 999));
+    if (type_roll < params_.market_per_mille) {
+      r.type = OrderType::Market;
+      r.time_in_force =
+          rng_.chance(500) ? TimeInForce::ImmediateOrCancel : TimeInForce::GoodTillCancel;
+      r.price = 0;
+      if (config_.profile == Profile::Deep && rng_.chance(5)) {
+        r.quantity = kMaxOrderQuantity;  // Sweeps the entire opposite side.
+      }
     } else {
-      op.cancel_id = static_cast<OrderId>(rng.between(0, static_cast<std::int64_t>(next_id_hint) + 3));
+      r.type = OrderType::Limit;
+      r.time_in_force = type_roll < params_.market_per_mille + params_.ioc_per_mille
+                            ? TimeInForce::ImmediateOrCancel
+                            : TimeInForce::GoodTillCancel;
+      r.price = limit_price(r.side, mid);
+    }
+
+    if (rng_.chance(30)) {
+      inject_invalid(r);
     }
     return op;
   }
 
-  OrderRequest& r = op.request;
-  r.owner = static_cast<TraderId>(rng.between(0, config.owners));  // 0 = anonymous.
-  r.side = rng.chance(50) ? Side::Buy : Side::Sell;
-  r.quantity = rng.chance(5) ? rng.between(200, 2000) : rng.between(1, 100);
-  const int stp_roll = static_cast<int>(rng.between(0, 99));
-  r.self_trade_prevention = stp_roll < 60   ? SelfTradePrevention::Allow
-                            : stp_roll < 80 ? SelfTradePrevention::CancelResting
-                                            : SelfTradePrevention::CancelIncoming;
-  r.timestamp = static_cast<Timestamp>(next_id_hint) * 1000;
-
-  if (roll < 33) {
-    r.type = OrderType::Market;
-    r.time_in_force = rng.chance(50) ? TimeInForce::ImmediateOrCancel : TimeInForce::GoodTillCancel;
-    r.price = 0;
-  } else {
-    r.type = OrderType::Limit;
-    r.time_in_force = roll < 40 ? TimeInForce::ImmediateOrCancel : TimeInForce::GoodTillCancel;
-    // Buys centred slightly below mid and sells slightly above, overlapping enough that a
-    // large fraction of orders cross.
-    const std::int64_t skew = r.side == Side::Buy ? -1 : 1;
-    r.price = mid + skew + rng.between(-config.price_half_width, config.price_half_width);
+ private:
+  std::int64_t limit_price(Side side, std::int64_t mid) {
+    const std::int64_t width = params_.price_half_width;
+    if (config_.profile == Profile::Deep) {
+      if (rng_.chance(5)) {  // Far-away boundary prices that only a full sweep reaches.
+        return side == Side::Buy ? 1 : kMaxPrice;
+      }
+      // Mostly passive: buys below and sells above mid, so the book keeps growing; a small
+      // fraction crosses to keep trades flowing.
+      const bool aggressive = rng_.chance(30);
+      const std::int64_t offset = rng_.between(1, width);
+      if (side == Side::Buy) {
+        return aggressive ? mid + offset : std::max<std::int64_t>(2, mid - offset);
+      }
+      return aggressive ? std::max<std::int64_t>(2, mid - offset) : mid + offset;
+    }
+    // Buys centred slightly below mid and sells slightly above, overlapping enough that a large
+    // fraction of orders cross.
+    const std::int64_t skew = side == Side::Buy ? -1 : 1;
+    return mid + skew + rng_.between(-width, width);
   }
 
-  if (rng.chance(2)) {  // Occasionally inject invalid input.
-    switch (rng.between(0, 3)) {
-      case 0: r.quantity = -rng.between(0, 5); break;
-      case 1: r.quantity = kMaxOrderQuantity + 1; break;
-      case 2: r.type = OrderType::Limit; r.price = -rng.between(0, 5); break;
-      default: r.type = OrderType::Market; r.price = 7; break;
+  void inject_invalid(OrderRequest& r) {
+    switch (rng_.between(0, 9)) {
+      case 0: r.quantity = -rng_.between(0, 5); break;
+      case 1: r.quantity = kMaxOrderQuantity + rng_.between(1, 10); break;
+      case 2: r.type = OrderType::Limit; r.price = -rng_.between(0, 5); break;
+      case 3: r.type = OrderType::Limit; r.price = kMaxPrice + rng_.between(1, 10); break;
+      case 4: r.type = OrderType::Market; r.price = rng_.between(1, 50); break;
+      case 5: r.side = static_cast<Side>(rng_.between(2, 255)); break;
+      case 6: r.type = static_cast<OrderType>(rng_.between(2, 255)); break;
+      case 7: r.time_in_force = static_cast<TimeInForce>(rng_.between(2, 255)); break;
+      case 8:
+        r.self_trade_prevention = static_cast<SelfTradePrevention>(rng_.between(3, 255));
+        break;
+      default: r.instrument = static_cast<InstrumentId>(params_.instruments + rng_.between(0, 3));
     }
   }
-  return op;
+
+  StreamConfig config_;
+  ProfileParams params_;
+  SplitMix64 rng_;
+  std::vector<std::int64_t> mids_;
+};
+
+// ---- Engine -> reference-model conversions -------------------------------------------------
+
+RefSubmit to_ref(const SubmitResult& r) {
+  RefSubmit out;
+  out.sequence = r.sequence;
+  out.order_id = r.order_id;
+  out.status = r.status;
+  out.reject_reason = r.reject_reason;
+  out.cancel_reason = r.cancel_reason;
+  out.requested = r.requested_quantity;
+  out.filled = r.filled_quantity;
+  out.rested = r.resting_quantity;
+  out.cancelled = r.cancelled_quantity;
+  for (const Trade& t : r.trades) {
+    out.trades.push_back(RefTrade{t.id, t.sequence, t.instrument, t.price, t.quantity,
+                                  t.aggressor_side, t.buy_order_id, t.sell_order_id, t.buyer,
+                                  t.seller, t.timestamp});
+  }
+  for (const RestingCancel& c : r.resting_cancels) {
+    out.stp_cancels.push_back(
+        RefStpCancel{c.order_id, c.sequence, c.owner, c.side, c.price, c.cancelled_quantity});
+  }
+  return out;
+}
+
+RefCancel to_ref(const CancelResult& r) {
+  return RefCancel{r.outcome, r.sequence, r.order_id, r.owner, r.side, r.price,
+                   r.cancelled_quantity};
 }
 
 std::vector<RefRow> engine_rows(const OrderBook& book) {
   std::vector<RefRow> rows;
   for (const Side side : {Side::Buy, Side::Sell}) {
     for (const auto& [price, level] : book.side(side)) {
-      for (const Order* order = level.front(); order != nullptr; order = order->next()) {
-        rows.push_back(RefRow{side, price, order->id, order->remaining_quantity});
+      for (const Order* o = level.front(); o != nullptr; o = o->next()) {
+        rows.push_back(RefRow{side, price, o->id, o->owner, o->sequence, o->original_quantity,
+                              o->remaining_quantity, o->timestamp});
       }
     }
   }
   return rows;
 }
 
-RefTrade to_ref(const Trade& t) {
-  return RefTrade{t.price, t.quantity, t.buy_order_id, t.sell_order_id, t.buyer, t.seller};
+// L2 view aggregated from reference rows, for checking the engine's cached level aggregates.
+std::vector<LevelView> aggregate(const std::vector<RefRow>& rows, Side side) {
+  std::vector<LevelView> levels;
+  for (const RefRow& row : rows) {
+    if (row.side != side) {
+      continue;
+    }
+    if (levels.empty() || levels.back().price != row.price) {
+      levels.push_back(LevelView{row.price, 0, 0});
+    }
+    levels.back().quantity += row.remaining;
+    levels.back().order_count += 1;
+  }
+  return levels;
 }
 
-// Tracks every accepted order and every execution to check economic invariants.
-class Ledger {
+// ---- Direct contract checks (independent of the reference model) --------------------------
+
+class ContractChecker {
  public:
-  void on_accepted(OrderId id, const OrderRequest& request) {
-    ASSERT_TRUE(orders_.emplace(id, Info{request, 0}).second) << "duplicate order id " << id;
+  explicit ContractChecker(int instruments)
+      : expected_resting_(static_cast<std::size_t>(instruments)) {}
+
+  void on_submit(const MatchingEngine& engine, const OrderRequest& request,
+                 const SubmitResult& result) {
+    ASSERT_EQ(result.sequence, last_sequence_ + 1) << "submit must take the next sequence";
+    last_sequence_ = result.sequence;
+    ASSERT_EQ(result.requested_quantity, request.quantity);
+    if (!result.accepted()) {
+      ASSERT_EQ(result.order_id, kInvalidOrderId);
+      ASSERT_TRUE(result.trades.empty());
+      ASSERT_TRUE(result.resting_cancels.empty());
+      ASSERT_EQ(result.filled_quantity + result.resting_quantity + result.cancelled_quantity, 0);
+      ASSERT_EQ(engine.last_sequence(), last_sequence_);
+      return;
+    }
+    ASSERT_EQ(result.order_id, next_order_id_) << "order ids must be dense";
+    ++next_order_id_;
+    ASSERT_TRUE(orders_.emplace(result.order_id, OrderInfo{request, 0, 0, false}).second);
+
+    // Trades and STP cancels must occupy the next sequence numbers with no gaps, in the order
+    // the matching loop produced them.
+    std::vector<Sequence> event_sequences;
+    for (const Trade& t : result.trades) event_sequences.push_back(t.sequence);
+    for (const RestingCancel& c : result.resting_cancels) event_sequences.push_back(c.sequence);
+    std::sort(event_sequences.begin(), event_sequences.end());
+    for (const Sequence s : event_sequences) {
+      ASSERT_EQ(s, last_sequence_ + 1) << "event sequence numbers must be contiguous";
+      last_sequence_ = s;
+    }
+    ASSERT_EQ(engine.last_sequence(), last_sequence_);
+
+    auto& resting_volume = expected_resting_.at(request.instrument);
+    for (const RestingCancel& c : result.resting_cancels) {
+      ASSERT_EQ(c.reason, CancelReason::SelfTradePrevention);
+      ASSERT_EQ(c.owner, request.owner);
+      ASSERT_EQ(c.side, opposite(request.side));
+      OrderInfo& victim = orders_.at(c.order_id);
+      ASSERT_FALSE(victim.finished) << "STP cancelled an order that was no longer live";
+      ASSERT_EQ(victim.request.instrument, request.instrument);
+      ASSERT_EQ(c.price, victim.request.price);
+      ASSERT_EQ(c.cancelled_quantity,
+                victim.request.quantity - victim.filled - victim.cancelled);
+      victim.cancelled += c.cancelled_quantity;
+      victim.finished = true;
+      resting_volume[side_index(c.side)] -= c.cancelled_quantity;
+    }
+
+    Quantity traded = 0;
+    for (const Trade& t : result.trades) {
+      ASSERT_EQ(t.id, next_trade_id_) << "trade ids must be dense";
+      ++next_trade_id_;
+      ASSERT_EQ(t.instrument, request.instrument);
+      ASSERT_EQ(t.aggressor_side, request.side);
+      ASSERT_EQ(t.aggressor_order_id(), result.order_id);
+      ASSERT_EQ(t.timestamp, request.timestamp);
+      ASSERT_GT(t.quantity, 0);
+      OrderInfo& buy = orders_.at(t.buy_order_id);
+      OrderInfo& sell = orders_.at(t.sell_order_id);
+      ASSERT_EQ(buy.request.side, Side::Buy);
+      ASSERT_EQ(sell.request.side, Side::Sell);
+      ASSERT_EQ(t.buyer, buy.request.owner);
+      ASSERT_EQ(t.seller, sell.request.owner);
+      ASSERT_FALSE(buy.finished) << "finished buy order traded";
+      ASSERT_FALSE(sell.finished) << "finished sell order traded";
+      if (buy.request.type == OrderType::Limit) {
+        ASSERT_LE(t.price, buy.request.price) << "buy executed above its limit";
+      }
+      if (sell.request.type == OrderType::Limit) {
+        ASSERT_GE(t.price, sell.request.price) << "sell executed below its limit";
+      }
+      OrderInfo& resting = orders_.at(t.resting_order_id());
+      ASSERT_EQ(t.price, resting.request.price) << "trade not at the resting order's price";
+      buy.filled += t.quantity;
+      sell.filled += t.quantity;
+      ASSERT_LE(buy.filled, buy.request.quantity) << "buy over-filled";
+      ASSERT_LE(sell.filled, sell.request.quantity) << "sell over-filled";
+      if (resting.filled == resting.request.quantity) {
+        resting.finished = true;
+      }
+      resting_volume[side_index(opposite(request.side))] -= t.quantity;
+      traded += t.quantity;
+    }
+
+    ASSERT_EQ(traded, result.filled_quantity);
+    ASSERT_EQ(result.filled_quantity + result.resting_quantity + result.cancelled_quantity,
+              request.quantity);
+    OrderInfo& incoming = orders_.at(result.order_id);
+    incoming.cancelled += result.cancelled_quantity;
+    const bool rests = result.status == OrderStatus::Resting;
+    ASSERT_EQ(rests, result.resting_quantity > 0);
+    ASSERT_EQ(engine.book(request.instrument).find(result.order_id) != nullptr, rests);
+    if (rests) {
+      resting_volume[side_index(request.side)] += result.resting_quantity;
+    } else {
+      incoming.finished = true;
+    }
   }
 
-  void on_cancelled(OrderId id) { cancelled_.insert(id); }
-
-  void on_trade(const Trade& trade, const std::unordered_map<OrderId, Price>& resting_prices) {
-    ASSERT_GT(trade.quantity, 0);
-    ASSERT_FALSE(cancelled_.contains(trade.buy_order_id)) << "cancelled buy order traded";
-    ASSERT_FALSE(cancelled_.contains(trade.sell_order_id)) << "cancelled sell order traded";
-    ASSERT_NE(trade.buy_order_id, trade.sell_order_id);
-
-    Info& buy = orders_.at(trade.buy_order_id);
-    Info& sell = orders_.at(trade.sell_order_id);
-    ASSERT_EQ(buy.request.side, Side::Buy);
-    ASSERT_EQ(sell.request.side, Side::Sell);
-    if (buy.request.type == OrderType::Limit) {
-      ASSERT_LE(trade.price, buy.request.price) << "buy executed above its limit";
+  void on_cancel(const MatchingEngine& engine, InstrumentId instrument, OrderId id,
+                 const CancelResult& result) {
+    ASSERT_EQ(result.sequence, last_sequence_ + 1) << "cancel must take the next sequence";
+    last_sequence_ = result.sequence;
+    ASSERT_EQ(engine.last_sequence(), last_sequence_);
+    ASSERT_EQ(result.order_id, id);
+    const auto it = orders_.find(id);
+    const bool live = it != orders_.end() && !it->second.finished &&
+                      it->second.request.instrument == instrument;
+    if (!engine.has_instrument(instrument)) {
+      ASSERT_EQ(result.outcome, CancelOutcome::UnknownInstrument);
+      return;
     }
-    if (sell.request.type == OrderType::Limit) {
-      ASSERT_GE(trade.price, sell.request.price) << "sell executed below its limit";
+    ASSERT_EQ(result.cancelled(), live) << to_string(result.outcome);
+    if (!live) {
+      ASSERT_EQ(result.outcome, CancelOutcome::OrderNotFound);
+      ASSERT_EQ(result.cancelled_quantity, 0);
+      return;
     }
-    // Execution price is always the resting (passive) order's limit price.
-    ASSERT_EQ(trade.price, resting_prices.at(trade.resting_order_id()));
-
-    buy.filled += trade.quantity;
-    sell.filled += trade.quantity;
-    ASSERT_LE(buy.filled, buy.request.quantity) << "buy over-filled";
-    ASSERT_LE(sell.filled, sell.request.quantity) << "sell over-filled";
-
-    ASSERT_GT(trade.sequence, last_trade_sequence_);
-    ASSERT_GT(trade.id, last_trade_id_);
-    last_trade_sequence_ = trade.sequence;
-    last_trade_id_ = trade.id;
-
-    const std::int64_t notional = trade.price * trade.quantity;
-    shares_[trade.buyer] += trade.quantity;
-    shares_[trade.seller] -= trade.quantity;
-    cash_[trade.buyer] -= notional;
-    cash_[trade.seller] += notional;
+    OrderInfo& info = it->second;
+    ASSERT_EQ(result.owner, info.request.owner);
+    ASSERT_EQ(result.side, info.request.side);
+    ASSERT_EQ(result.price, info.request.price);
+    ASSERT_EQ(result.cancelled_quantity, info.request.quantity - info.filled - info.cancelled);
+    ASSERT_EQ(engine.book(instrument).find(id), nullptr);
+    info.cancelled += result.cancelled_quantity;
+    info.finished = true;
+    expected_resting_.at(instrument)[side_index(result.side)] -= result.cancelled_quantity;
   }
 
-  void check_conservation() const {
-    std::int64_t total_shares = 0;
-    std::int64_t total_cash = 0;
-    for (const auto& [owner, shares] : shares_) {
-      total_shares += shares;
+  // Book volume per side must equal what the accounting says is still resting.
+  void check_book_volume(const MatchingEngine& engine) const {
+    for (std::size_t i = 0; i < expected_resting_.size(); ++i) {
+      const OrderBook& book = engine.book(static_cast<InstrumentId>(i));
+      ASSERT_EQ(book.total_volume(Side::Buy), expected_resting_[i][0]) << "instrument " << i;
+      ASSERT_EQ(book.total_volume(Side::Sell), expected_resting_[i][1]) << "instrument " << i;
     }
-    for (const auto& [owner, cash] : cash_) {
-      total_cash += cash;
+  }
+
+  // Lifetime conservation for every order ever accepted.
+  void check_all_orders(const MatchingEngine& engine) const {
+    for (const auto& [id, info] : orders_) {
+      const Order* resting = engine.book(info.request.instrument).find(id);
+      const Quantity still_resting = resting == nullptr ? 0 : resting->remaining_quantity;
+      ASSERT_EQ(info.filled + info.cancelled + still_resting, info.request.quantity)
+          << "order " << id << " quantity not conserved";
+      ASSERT_EQ(info.finished, resting == nullptr) << "order " << id;
     }
-    EXPECT_EQ(total_shares, 0) << "shares created or destroyed by matching";
-    EXPECT_EQ(total_cash, 0) << "cash created or destroyed by matching";
   }
 
  private:
-  struct Info {
+  struct OrderInfo {
     OrderRequest request;
     Quantity filled;
+    Quantity cancelled;
+    bool finished;
   };
-  std::unordered_map<OrderId, Info> orders_;
-  std::set<OrderId> cancelled_;
-  std::map<TraderId, std::int64_t> shares_;
-  std::map<TraderId, std::int64_t> cash_;
-  Sequence last_trade_sequence_ = 0;
-  TradeId last_trade_id_ = 0;
+  static std::size_t side_index(Side side) { return side == Side::Buy ? 0 : 1; }
+
+  std::unordered_map<OrderId, OrderInfo> orders_;
+  std::vector<std::array<Quantity, 2>> expected_resting_;
+  Sequence last_sequence_ = 0;
+  OrderId next_order_id_ = 1;
+  TradeId next_trade_id_ = 1;
 };
+
+// What a stream actually exercised, so that a generator regression cannot silently stop
+// testing the interesting paths.
+struct Coverage {
+  int trades = 0;
+  int multi_level_sweeps = 0;  // Submissions that traded at >= 2 distinct prices.
+  int deep_sweeps = 0;         // Submissions that traded at >= 10 distinct prices.
+  int stp_resting_cancels = 0;
+  int stp_incoming_stops = 0;
+  int market_partial = 0;      // Market orders with both fills and a cancelled remainder.
+  int successful_cancels = 0;
+  int failed_cancels = 0;
+  int rejects = 0;
+  std::size_t peak_resting_orders = 0;
+  std::set<RejectReason> reject_reasons;
+};
+
+void record(Coverage& coverage, const OrderRequest& request, const SubmitResult& result) {
+  if (!result.accepted()) {
+    ++coverage.rejects;
+    coverage.reject_reasons.insert(result.reject_reason);
+    return;
+  }
+  coverage.trades += static_cast<int>(result.trades.size());
+  std::set<Price> prices;
+  for (const Trade& t : result.trades) prices.insert(t.price);
+  coverage.multi_level_sweeps += prices.size() >= 2 ? 1 : 0;
+  coverage.deep_sweeps += prices.size() >= 10 ? 1 : 0;
+  coverage.stp_resting_cancels += static_cast<int>(result.resting_cancels.size());
+  coverage.stp_incoming_stops += result.cancel_reason == CancelReason::SelfTradePrevention;
+  coverage.market_partial += request.type == OrderType::Market && result.filled_quantity > 0 &&
+                             result.cancelled_quantity > 0;
+}
+
+// ---- The differential / property test ------------------------------------------------------
 
 class RandomizedMatchingTest : public ::testing::TestWithParam<StreamConfig> {};
 
-TEST_P(RandomizedMatchingTest, MatchesReferenceAndPreservesInvariants) {
+TEST_P(RandomizedMatchingTest, MatchesReferenceAndPreservesContract) {
   const StreamConfig config = GetParam();
-  SplitMix64 rng(config.seed);
+  const ProfileParams p = params(config.profile);
+  StreamGenerator generator(config);
   MatchingEngine engine;
-  const InstrumentId instrument = engine.add_instrument();
-  ReferenceBook reference;
-  Ledger ledger;
-  std::unordered_map<OrderId, Price> resting_prices;  // Limit price of every accepted order.
-  std::int64_t mid = 1000;
-  OrderId next_id_hint = 1;
-  Sequence last_sequence = 0;
-  std::size_t total_trades = 0;
-  std::size_t successful_cancels = 0;
+  ReferenceEngine reference;
+  for (int i = 0; i < p.instruments; ++i) {
+    ASSERT_EQ(engine.add_instrument(), reference.add_instrument());
+  }
+  ContractChecker checker(p.instruments);
+  Coverage coverage;
 
   for (int step = 0; step < config.operations; ++step) {
     SCOPED_TRACE(::testing::Message() << config << " step=" << step);
-    Operation op = next_operation(rng, config, mid, reference, next_id_hint);
+    const Operation op = generator.next(reference);
 
     if (op.kind == OpKind::Cancel) {
-      const CancelResult result = engine.cancel(instrument, op.cancel_id);
-      const auto expected = reference.cancel(op.cancel_id);
-      ASSERT_GT(result.sequence, last_sequence);
-      last_sequence = result.sequence;
-      ASSERT_EQ(result.cancelled(), expected.has_value());
-      if (expected) {
-        ASSERT_EQ(result.cancelled_quantity, *expected);
-        ledger.on_cancelled(op.cancel_id);
-        ++successful_cancels;
-      }
+      const CancelResult result = engine.cancel(op.cancel_instrument, op.cancel_id);
+      ASSERT_EQ(to_ref(result), reference.cancel(op.cancel_instrument, op.cancel_id));
+      checker.on_cancel(engine, op.cancel_instrument, op.cancel_id, result);
+      ++(result.cancelled() ? coverage.successful_cancels : coverage.failed_cancels);
     } else {
-      op.request.instrument = instrument;
       const SubmitResult result = engine.submit(op.request);
-      const bool is_market = op.request.type == OrderType::Market;
-      const bool is_ioc = op.request.time_in_force == TimeInForce::ImmediateOrCancel;
-      const auto expected =
-          reference.submit(next_id_hint, op.request.owner, op.request.side, is_market,
-                           is_ioc, op.request.self_trade_prevention, op.request.price,
-                           op.request.quantity);
-
-      ASSERT_GT(result.sequence, last_sequence);
-      last_sequence = result.sequence;
-      ASSERT_EQ(!result.accepted(), expected.rejected);
-      if (!result.accepted()) {
-        ASSERT_TRUE(result.trades.empty());
-        ASSERT_EQ(result.filled_quantity + result.resting_quantity + result.cancelled_quantity, 0);
-        continue;
-      }
-      ASSERT_EQ(result.order_id, next_id_hint) << "order ids must be dense and sequential";
-      ++next_id_hint;
-
-      ledger.on_accepted(result.order_id, op.request);
-      resting_prices[result.order_id] = op.request.price;
-
-      std::vector<std::pair<std::uint64_t, std::int64_t>> stp_cancels;
-      for (const RestingCancel& cancel : result.resting_cancels) {
-        stp_cancels.emplace_back(cancel.order_id, cancel.cancelled_quantity);
-        ASSERT_EQ(cancel.reason, CancelReason::SelfTradePrevention);
-        ASSERT_EQ(cancel.owner, op.request.owner);
-        ASSERT_EQ(cancel.side, opposite(op.request.side));
-        ledger.on_cancelled(cancel.order_id);
-      }
-      ASSERT_EQ(stp_cancels, expected.stp_cancelled_resting);
-
-      std::vector<RefTrade> actual_trades;
-      for (const Trade& trade : result.trades) {
-        actual_trades.push_back(to_ref(trade));
-        ledger.on_trade(trade, resting_prices);
-        ASSERT_GT(trade.sequence, last_sequence);
-        last_sequence = trade.sequence;
-        ASSERT_EQ(trade.timestamp, op.request.timestamp);
-        ASSERT_EQ(trade.aggressor_side, op.request.side);
-      }
-      ASSERT_EQ(actual_trades, expected.trades);
-      total_trades += actual_trades.size();
-
-      ASSERT_EQ(result.filled_quantity, expected.filled);
-      ASSERT_EQ(result.resting_quantity, expected.rested);
-      ASSERT_EQ(result.cancelled_quantity, expected.cancelled);
-      ASSERT_EQ(result.filled_quantity + result.resting_quantity + result.cancelled_quantity,
-                op.request.quantity);
-      if (result.resting_quantity == 0) {
-        // An order that does not rest is finished; it must never trade again.
-        ledger.on_cancelled(result.order_id);
-      }
+      ASSERT_EQ(to_ref(result), reference.submit(op.request));
+      checker.on_submit(engine, op.request, result);
+      record(coverage, op.request, result);
+    }
+    if (::testing::Test::HasFatalFailure()) {
+      return;
+    }
+    for (int i = 0; i < p.instruments; ++i) {
+      coverage.peak_resting_orders = std::max(
+          coverage.peak_resting_orders, engine.book(static_cast<InstrumentId>(i)).order_count());
     }
 
-    if (step % 64 == 0 || step + 1 == config.operations) {
-      const OrderBook& book = engine.book(instrument);
-      ASSERT_NO_THROW(book.check_invariants());
-      ASSERT_EQ(engine_rows(book), reference.rows());
+    if (step % p.check_every == 0 || step + 1 == config.operations) {
+      checker.check_book_volume(engine);
+      for (int i = 0; i < p.instruments; ++i) {
+        const auto instrument = static_cast<InstrumentId>(i);
+        const OrderBook& book = engine.book(instrument);
+        ASSERT_NO_THROW(book.check_invariants());
+        const std::vector<RefRow> expected = reference.rows(instrument);
+        ASSERT_EQ(engine_rows(book), expected);
+        const auto max_levels = std::numeric_limits<std::size_t>::max();
+        ASSERT_EQ(book.depth(Side::Buy, max_levels), aggregate(expected, Side::Buy));
+        ASSERT_EQ(book.depth(Side::Sell, max_levels), aggregate(expected, Side::Sell));
+        ASSERT_EQ(book.order_count(), expected.size());
+      }
     }
   }
+  checker.check_all_orders(engine);
 
-  ledger.check_conservation();
-  // Guard against a generator that silently stops exercising the interesting paths.
-  EXPECT_GT(total_trades, static_cast<std::size_t>(config.operations) / 10);
-  EXPECT_GT(successful_cancels, static_cast<std::size_t>(config.operations) / 20);
+  // Coverage floors, set well below what every seed of each profile actually reaches.
+  const int ops = config.operations;
+  EXPECT_GT(coverage.trades, ops / 10);
+  EXPECT_GT(coverage.successful_cancels, ops / 50);
+  EXPECT_GT(coverage.failed_cancels, 0);
+  EXPECT_GT(coverage.rejects, 0);
+  EXPECT_GE(coverage.reject_reasons.size(), 7u);
+  EXPECT_GT(coverage.multi_level_sweeps, 0);
+  EXPECT_GT(coverage.market_partial, 0);
+  EXPECT_GT(coverage.stp_resting_cancels, 0);
+  EXPECT_GT(coverage.stp_incoming_stops, 0);
+  if (config.profile == Profile::Deep) {
+    EXPECT_GT(coverage.peak_resting_orders, OrderPool::kChunkSize)
+        << "deep profile must grow the book past one pool chunk";
+    EXPECT_GT(coverage.deep_sweeps, 0);
+  }
+  RecordProperty("trades", coverage.trades);
+  RecordProperty("multi_level_sweeps", coverage.multi_level_sweeps);
+  RecordProperty("deep_sweeps", coverage.deep_sweeps);
+  RecordProperty("stp_resting_cancels", coverage.stp_resting_cancels);
+  RecordProperty("stp_incoming_stops", coverage.stp_incoming_stops);
+  RecordProperty("market_partial", coverage.market_partial);
+  RecordProperty("successful_cancels", coverage.successful_cancels);
+  RecordProperty("failed_cancels", coverage.failed_cancels);
+  RecordProperty("rejects", coverage.rejects);
+  RecordProperty("reject_reasons", static_cast<int>(coverage.reject_reasons.size()));
+  RecordProperty("peak_resting_orders", static_cast<int>(coverage.peak_resting_orders));
 }
 
 std::vector<StreamConfig> stream_configs() {
   std::vector<StreamConfig> configs;
   for (std::uint64_t seed = 1; seed <= 12; ++seed) {
-    configs.push_back({seed, 6000, 3, 3});      // Narrow: deep queues, heavy STP.
-    configs.push_back({seed + 100, 6000, 25, 8});   // Moderate.
-    configs.push_back({seed + 200, 4000, 400, 20});  // Wide: many sparse levels.
+    configs.push_back({Profile::Narrow, seed, 6000});
+    configs.push_back({Profile::Moderate, seed + 100, 6000});
+    configs.push_back({Profile::Wide, seed + 200, 4000});
+  }
+  for (std::uint64_t seed = 1; seed <= 3; ++seed) {
+    configs.push_back({Profile::Deep, seed + 300, 20000});
   }
   return configs;
 }
 
-INSTANTIATE_TEST_SUITE_P(Streams, RandomizedMatchingTest, ::testing::ValuesIn(stream_configs()));
+std::string config_name(const ::testing::TestParamInfo<StreamConfig>& info) {
+  return std::string(params(info.param.profile).name) + "_" + std::to_string(info.param.seed);
+}
+
+INSTANTIATE_TEST_SUITE_P(Streams, RandomizedMatchingTest, ::testing::ValuesIn(stream_configs()),
+                         config_name);
 
 // ---- Deterministic replay ------------------------------------------------------------------
 
-struct RunTranscript {
-  std::vector<std::tuple<OrderId, Sequence, OrderStatus, Quantity, Quantity, Quantity>> outcomes;
-  std::vector<Trade> trades;
-  BookSnapshot final_book;
+// 64-bit FNV-1a over an explicit, padding-free serialisation of every observable output.
+class Digest {
+ public:
+  void add(std::uint64_t value) {
+    for (int byte = 0; byte < 8; ++byte) {
+      hash_ ^= (value >> (8 * byte)) & 0xFFU;
+      hash_ *= 0x100000001B3ULL;
+    }
+  }
+  void add_signed(std::int64_t value) { add(static_cast<std::uint64_t>(value)); }
+  template <typename Enum>
+  void add_enum(Enum value) {
+    add(static_cast<std::uint64_t>(value));
+  }
+  [[nodiscard]] std::uint64_t value() const { return hash_; }
+
+ private:
+  std::uint64_t hash_ = 0xCBF29CE484222325ULL;
 };
 
-RunTranscript run_stream(std::uint64_t seed, int operations) {
-  const StreamConfig config{seed, operations, 10, 6};
-  SplitMix64 rng(seed);
-  MatchingEngine engine;
-  const InstrumentId instrument = engine.add_instrument();
-  ReferenceBook reference;  // Only used to choose realistic cancel targets.
-  std::int64_t mid = 1000;
-  OrderId next_id_hint = 1;
-  RunTranscript transcript;
-  for (int step = 0; step < operations; ++step) {
-    Operation op = next_operation(rng, config, mid, reference, next_id_hint);
-    if (op.kind == OpKind::Cancel) {
-      const auto result = engine.cancel(instrument, op.cancel_id);
-      reference.cancel(op.cancel_id);
-      transcript.outcomes.emplace_back(op.cancel_id, result.sequence, OrderStatus::Cancelled,
-                                       result.cancelled_quantity, 0, 0);
-      continue;
-    }
-    op.request.instrument = instrument;
-    const auto result = engine.submit(op.request);
-    reference.submit(next_id_hint, op.request.owner, op.request.side,
-                     op.request.type == OrderType::Market,
-                     op.request.time_in_force == TimeInForce::ImmediateOrCancel,
-                     op.request.self_trade_prevention, op.request.price, op.request.quantity);
-    if (result.accepted()) {
-      ++next_id_hint;
-    }
-    transcript.outcomes.emplace_back(result.order_id, result.sequence, result.status,
-                                     result.filled_quantity, result.resting_quantity,
-                                     result.cancelled_quantity);
-    transcript.trades.insert(transcript.trades.end(), result.trades.begin(), result.trades.end());
+void digest(Digest& d, const RefSubmit& r) {
+  d.add(r.sequence);
+  d.add(r.order_id);
+  d.add_enum(r.status);
+  d.add_enum(r.reject_reason);
+  d.add_enum(r.cancel_reason);
+  d.add_signed(r.requested);
+  d.add_signed(r.filled);
+  d.add_signed(r.rested);
+  d.add_signed(r.cancelled);
+  for (const RefTrade& t : r.trades) {
+    d.add(t.id);
+    d.add(t.sequence);
+    d.add(t.instrument);
+    d.add_signed(t.price);
+    d.add_signed(t.quantity);
+    d.add_enum(t.aggressor_side);
+    d.add(t.buy_order_id);
+    d.add(t.sell_order_id);
+    d.add(t.buyer);
+    d.add(t.seller);
+    d.add_signed(t.timestamp);
   }
-  transcript.final_book = engine.book(instrument).snapshot(1'000'000);
-  return transcript;
+  for (const RefStpCancel& c : r.stp_cancels) {
+    d.add(c.order_id);
+    d.add(c.sequence);
+    d.add(c.owner);
+    d.add_enum(c.side);
+    d.add_signed(c.price);
+    d.add_signed(c.quantity);
+  }
 }
 
-TEST(DeterministicReplay, IdenticalInputsProduceIdenticalOutputs) {
-  for (const std::uint64_t seed : {7ULL, 99ULL, 12345ULL}) {
-    const RunTranscript first = run_stream(seed, 20'000);
-    const RunTranscript second = run_stream(seed, 20'000);
-    EXPECT_EQ(first.outcomes, second.outcomes) << "seed " << seed;
-    EXPECT_EQ(first.trades, second.trades) << "seed " << seed;
-    EXPECT_EQ(first.final_book, second.final_book) << "seed " << seed;
-    EXPECT_FALSE(first.trades.empty());
+void digest(Digest& d, const RefCancel& c) {
+  d.add_enum(c.outcome);
+  d.add(c.sequence);
+  d.add(c.order_id);
+  d.add(c.owner);
+  d.add_enum(c.side);
+  d.add_signed(c.price);
+  d.add_signed(c.quantity);
+}
+
+void digest(Digest& d, const std::vector<RefRow>& rows) {
+  for (const RefRow& row : rows) {
+    d.add_enum(row.side);
+    d.add_signed(row.price);
+    d.add(row.id);
+    d.add(row.owner);
+    d.add(row.sequence);
+    d.add_signed(row.original);
+    d.add_signed(row.remaining);
+    d.add_signed(row.timestamp);
+  }
+}
+
+// Runs a stream against `engine` and digests every output plus the final L3 books. The
+// reference model is only used by the generator to choose realistic cancel targets.
+std::uint64_t run_and_digest(MatchingEngine& engine, const StreamConfig& config) {
+  const ProfileParams p = params(config.profile);
+  StreamGenerator generator(config);
+  ReferenceEngine reference;
+  for (int i = 0; i < p.instruments; ++i) {
+    engine.add_instrument();
+    reference.add_instrument();
+  }
+  Digest d;
+  for (int step = 0; step < config.operations; ++step) {
+    const Operation op = generator.next(reference);
+    if (op.kind == OpKind::Cancel) {
+      digest(d, to_ref(engine.cancel(op.cancel_instrument, op.cancel_id)));
+      reference.cancel(op.cancel_instrument, op.cancel_id);
+    } else {
+      digest(d, to_ref(engine.submit(op.request)));
+      reference.submit(op.request);
+    }
+  }
+  for (int i = 0; i < p.instruments; ++i) {
+    digest(d, engine_rows(engine.book(static_cast<InstrumentId>(i))));
+  }
+  return d.value();
+}
+
+struct GoldenRun {
+  StreamConfig config;
+  std::uint64_t digest;
+};
+
+// Golden digests pin the complete observable behaviour (every id, sequence number, status,
+// reason, trade and final book) of fixed streams. The streams and the engine use only integer
+// arithmetic, so these values must be identical on every platform and compiler; CI checks
+// them on Linux/libstdc++ and macOS/libc++. If the engine's behaviour is changed on purpose,
+// update the constants and explain the change in the commit message.
+const GoldenRun kGoldenRuns[] = {
+    {{Profile::Narrow, 7, 20'000}, 0x8dbe168c961aa60cULL},
+    {{Profile::Moderate, 99, 20'000}, 0x713faa6e461e02a8ULL},
+    {{Profile::Wide, 12345, 10'000}, 0xc6d18c07126989f7ULL},
+};
+
+TEST(DeterministicReplay, IndependentRunsMatchGoldenDigests) {
+  for (const GoldenRun& golden : kGoldenRuns) {
+    SCOPED_TRACE(::testing::Message() << golden.config);
+    // Keep the first engine alive while the second runs so the two use different heap
+    // addresses: any dependence on pointer values would make the digests differ.
+    MatchingEngine first;
+    const std::uint64_t first_digest = run_and_digest(first, golden.config);
+    MatchingEngine second;
+    const std::uint64_t second_digest = run_and_digest(second, golden.config);
+    EXPECT_EQ(first_digest, second_digest);
+    EXPECT_EQ(first_digest, golden.digest)
+        << "golden digest changed; new value 0x" << std::hex << first_digest;
   }
 }
 
 TEST(DeterministicReplay, DifferentSeedsDiverge) {
-  const RunTranscript a = run_stream(1, 2'000);
-  const RunTranscript b = run_stream(2, 2'000);
-  EXPECT_NE(a.trades, b.trades);
+  MatchingEngine a;
+  MatchingEngine b;
+  EXPECT_NE(run_and_digest(a, {Profile::Narrow, 1, 2'000}),
+            run_and_digest(b, {Profile::Narrow, 2, 2'000}));
 }
 
 }  // namespace

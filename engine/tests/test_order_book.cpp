@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "udeshi/order_book.hpp"
@@ -147,6 +149,65 @@ TEST_F(OrderBookTest, ManyOrdersAcrossManyLevels) {
   EXPECT_EQ(book_.order_count(), 1000u);
   EXPECT_EQ(book_.volume_at(Side::Buy, 250), 6);
 }
+
+// Read-only views of the book must not hand out mutable access to its internals.
+static_assert(std::is_same_v<decltype(std::declval<const PriceLevel&>().front()), const Order*>);
+static_assert(std::is_same_v<decltype(std::declval<const PriceLevel&>().back()), const Order*>);
+static_assert(std::is_same_v<decltype(std::declval<const Order&>().next()), const Order*>);
+static_assert(std::is_same_v<decltype(std::declval<const Order&>().prev()), const Order*>);
+static_assert(std::is_same_v<decltype(std::declval<const Order&>().level()), const PriceLevel*>);
+static_assert(std::is_same_v<decltype(std::declval<const BookSide&>().best()), const PriceLevel*>);
+static_assert(std::is_same_v<decltype(std::declval<const OrderBook&>().find(1)), const Order*>);
+
+TEST_F(OrderBookTest, InsertRejectsMalformedOrdersWithoutSideEffects) {
+  Order bad_side = make_order(1, Side::Buy, 100, 5, 1);
+  bad_side.side = static_cast<Side>(2);
+  Order zero_price = make_order(2, Side::Buy, 0, 5, 2);
+  Order huge_price = make_order(3, Side::Sell, kMaxPrice + 1, 5, 3);
+  Order overfilled = make_order(4, Side::Buy, 100, 5, 4);
+  overfilled.remaining_quantity = 6;
+  for (const Order& order : {bad_side, zero_price, huge_price, overfilled}) {
+    EXPECT_THROW(book_.insert(order), std::invalid_argument) << order.id;
+  }
+  EXPECT_TRUE(book_.empty());
+  EXPECT_EQ(book_.level_count(Side::Buy), 0u);
+  EXPECT_EQ(book_.level_count(Side::Sell), 0u);
+}
+
+TEST_F(OrderBookTest, ManyOrdersAcrossFewLevelsSpanSeveralPoolChunks) {
+  // Pool growth must never move nodes that are linked into live FIFO queues.
+  const auto count = static_cast<OrderId>(OrderPool::kChunkSize * 3 + 11);
+  for (OrderId id = 1; id <= count; ++id) {
+    book_.insert(make_order(id, Side::Sell, 100 + static_cast<Price>(id % 7), 1, id));
+  }
+  book_.check_invariants();
+  for (OrderId id = 1; id <= count; id += 3) {
+    book_.remove(*book_.find_mutable(id));
+  }
+  book_.check_invariants();
+  EXPECT_EQ(book_.order_count(), count - (count + 2) / 3);
+  for (OrderId id = count + 1; id <= count + 500; ++id) {  // Reuses released nodes.
+    book_.insert(make_order(id, Side::Sell, 100, 1, id));
+  }
+  book_.check_invariants();
+}
+
+#if defined(UDESHI_ASAN_ENABLED)
+// Released nodes are poisoned, so a stale Order* is reported like a heap use-after-free even
+// though the pool never returns the memory to the allocator.
+TEST(OrderPoolDeathTest, AccessToReleasedNodeIsReportedUnderAsan) {
+  EXPECT_DEATH(
+      {
+        OrderPool pool;
+        Order* order = pool.allocate();
+        order->id = 7;
+        pool.release(order);
+        volatile OrderId stale = order->id;
+        static_cast<void>(stale);
+      },
+      "use-after-poison");
+}
+#endif
 
 }  // namespace
 }  // namespace udeshi

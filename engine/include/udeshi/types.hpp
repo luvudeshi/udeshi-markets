@@ -91,6 +91,15 @@ enum class CancelOutcome : std::uint8_t {
   return side == Side::Buy ? Side::Sell : Side::Buy;
 }
 
+// Adds a non-negative increment to a running total, clamping at INT64_MAX instead of
+// overflowing (signed overflow is undefined behaviour). Used for cumulative counters such as
+// traded volume, which per-order bounds cannot bound.
+[[nodiscard]] constexpr std::int64_t saturating_add(std::int64_t total,
+                                                    std::int64_t increment) noexcept {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  return total > kMax - increment ? kMax : total + increment;
+}
+
 // Enum fields can carry out-of-range values when they cross a language or serialisation
 // boundary (e.g. an integer converted to an enum by Python bindings). These predicates let the
 // engine reject such input instead of silently reinterpreting it.

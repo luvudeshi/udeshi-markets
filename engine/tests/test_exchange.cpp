@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <clocale>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "test_helpers.hpp"
@@ -188,6 +190,120 @@ TEST_F(ExchangeTest, TickConversionRejectsOffGridAndNonFinite) {
                    acme_, std::numeric_limits<double>::infinity())),
                std::invalid_argument);
   EXPECT_THROW(static_cast<void>(exchange_.to_ticks(acme_, 1e300)), std::invalid_argument);
+}
+
+TEST_F(ExchangeTest, TickConversionRejectsOffGridPricesAtEveryMagnitude) {
+  // A relative tolerance once let these through and rounded them, which could move a buy
+  // limit above the price the caller stated.
+  for (const double price : {5000.005, 12345.678, 99999.995, 9999999.995, 150.0001}) {
+    EXPECT_THROW(static_cast<void>(exchange_.to_ticks(acme_, price)), std::invalid_argument)
+        << price;
+  }
+  const InstrumentId fine = exchange_.add_instrument({"FINE", 0.0001, 10'000});
+  EXPECT_THROW(static_cast<void>(exchange_.to_ticks(fine, 50.00005)), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(exchange_.to_ticks(fine, 75.00004)), std::invalid_argument);
+  EXPECT_EQ(exchange_.to_ticks(fine, 75.0001), 750'001);
+  EXPECT_THROW(static_cast<void>(exchange_.to_ticks(nova_, 30000.03)), std::invalid_argument);
+  EXPECT_EQ(exchange_.to_ticks(nova_, 30000.05), 600'001);
+}
+
+TEST_F(ExchangeTest, TickConversionRejectsNegativeAndOutOfRangePrices) {
+  EXPECT_THROW(static_cast<void>(exchange_.to_ticks(acme_, -100.01)), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(exchange_.to_ticks(acme_, -0.01)), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(exchange_.to_ticks(acme_, 10'000'000.01)),
+               std::invalid_argument);
+  EXPECT_EQ(exchange_.to_ticks(acme_, 10'000'000.0), kMaxPrice);
+}
+
+TEST_F(ExchangeTest, TickConversionRoundTripsAcrossTheWholeRangeForAwkwardTickSizes) {
+  const std::vector<std::pair<std::string, double>> specs = {
+      {"T1", 0.01}, {"T2", 0.05}, {"T3", 0.7}, {"T4", 0.0003}, {"T5", 0.125}, {"T6", 1.0}};
+  for (const auto& [symbol, tick_size] : specs) {
+    const InstrumentId id = exchange_.add_instrument({symbol, tick_size, 100});
+    for (Price ticks = 0; ticks <= kMaxPrice; ticks += 9'999'991) {
+      ASSERT_EQ(exchange_.to_ticks(id, exchange_.to_currency(id, ticks)), ticks)
+          << symbol << " " << ticks;
+    }
+    EXPECT_EQ(exchange_.to_ticks(id, exchange_.to_currency(id, kMaxPrice)), kMaxPrice) << symbol;
+    EXPECT_EQ(exchange_.to_ticks(id, exchange_.to_currency(id, 1)), 1) << symbol;
+  }
+}
+
+TEST_F(ExchangeTest, NotionalIsExactAndPlatformIndependent) {
+  // Each product exceeds 2^53, so a fused multiply-add would round differently from a
+  // separate multiply and add. The expected value is the correctly rounded sum of the two
+  // exactly converted int64 products.
+  const InstrumentId big = exchange_.add_instrument({"BIG", 0.01, 500'000'000});
+  exchange_.submit(limit(Side::Sell, 774'668'236, 29'189'535, 1, big));
+  exchange_.submit(market(Side::Buy, 29'189'535, 2, big));
+  exchange_.submit(limit(Side::Sell, 997'689'704, 844'705'402, 1, big));
+  exchange_.submit(market(Side::Buy, 844'705'402, 2, big));
+  const auto stats = exchange_.statistics(big);
+  EXPECT_EQ(stats.trade_count, 2u);
+  EXPECT_EQ(stats.volume, 29'189'535 + 844'705'402);
+  EXPECT_EQ(stats.notional, 8.653660880766912e+17);
+}
+
+TEST(SaturatingAdd, ClampsInsteadOfOverflowing) {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  static_assert(saturating_add(1, 2) == 3);
+  static_assert(saturating_add(kMax - 5, 5) == kMax);
+  static_assert(saturating_add(kMax - 5, 6) == kMax);
+  static_assert(saturating_add(kMax, kMaxOrderQuantity) == kMax);
+  static_assert(saturating_add(0, 0) == 0);
+  EXPECT_EQ(saturating_add(kMax - 1, 1), kMax);
+}
+
+TEST_F(ExchangeTest, RejectsPunctuationOnlyAndLeadingPunctuationSymbols) {
+  for (const char* symbol : {".", "..", "-", "----", ".A", "-A"}) {
+    EXPECT_THROW(exchange_.add_instrument({symbol, 0.01, 100}), std::invalid_argument) << symbol;
+  }
+  EXPECT_NO_THROW(exchange_.add_instrument({"BRK.A", 0.01, 100}));
+  EXPECT_NO_THROW(exchange_.add_instrument({"9X-1", 0.01, 100}));
+}
+
+TEST_F(ExchangeTest, SymbolValidationIgnoresTheProcessLocale) {
+  // Under some UTF-8 locales std::isupper accepts bytes >= 0x80; validation must not.
+  const std::string previous = std::setlocale(LC_ALL, nullptr);
+  for (const char* locale : {"C.UTF-8", "en_US.UTF-8", "en_US.ISO8859-1"}) {
+    if (std::setlocale(LC_ALL, locale) == nullptr) {
+      continue;
+    }
+    EXPECT_THROW(exchange_.add_instrument({"\xC0\xC1", 0.01, 100}), std::invalid_argument)
+        << locale;
+    EXPECT_THROW(exchange_.add_instrument({"A\xDE", 0.01, 100}), std::invalid_argument)
+        << locale;
+  }
+  std::setlocale(LC_ALL, previous.c_str());
+}
+
+TEST(ExchangeRecentTrades, RingBufferKeepsTheNewestTradesAcrossManyWraps) {
+  Exchange exchange(3);
+  const InstrumentId id = exchange.add_instrument({"RING", 0.01, 1000});
+  for (Price price = 1; price <= 10; ++price) {
+    exchange.submit(limit(Side::Sell, price, 1, 1, id));
+    exchange.submit(limit(Side::Buy, price, 1, 2, id));
+    const auto trades = exchange.recent_trades(id, 100);
+    ASSERT_EQ(trades.size(), static_cast<std::size_t>(std::min<Price>(price, 3)));
+    for (std::size_t i = 0; i < trades.size(); ++i) {
+      EXPECT_EQ(trades[i].price, price - static_cast<Price>(trades.size() - 1 - i));
+    }
+  }
+  const auto newest = exchange.recent_trades(id, 1);
+  ASSERT_EQ(newest.size(), 1u);
+  EXPECT_EQ(newest[0].price, 10);
+}
+
+TEST(ExchangeRecentTrades, CapacityOfOneKeepsOnlyTheLastTrade) {
+  Exchange exchange(1);
+  const InstrumentId id = exchange.add_instrument({"ONE", 0.01, 1000});
+  for (Price price = 5; price <= 7; ++price) {
+    exchange.submit(limit(Side::Sell, price, 1, 1, id));
+    exchange.submit(limit(Side::Buy, price, 1, 2, id));
+  }
+  const auto trades = exchange.recent_trades(id, 10);
+  ASSERT_EQ(trades.size(), 1u);
+  EXPECT_EQ(trades[0].price, 7);
 }
 
 TEST(ExchangeConstruction, RejectsZeroTradeCapacity) {

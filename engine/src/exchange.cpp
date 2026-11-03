@@ -153,9 +153,7 @@ void Exchange::record_trade(InstrumentState& instrument_state, const Trade& trad
   stats.last_price = trade.price;
   stats.high_price = std::max(stats.high_price.value_or(trade.price), trade.price);
   stats.low_price = std::min(stats.low_price.value_or(trade.price), trade.price);
-  constexpr Quantity kMaxVolume = std::numeric_limits<Quantity>::max();
-  stats.volume = stats.volume > kMaxVolume - trade.quantity ? kMaxVolume
-                                                             : stats.volume + trade.quantity;
+  stats.volume = saturating_add(stats.volume, trade.quantity);
   stats.trade_count += 1;
   // price * quantity <= 1e18 is exact in int64; converting the exact product (rather than
   // multiplying two doubles) leaves no multiply-add for the compiler to fuse differently on

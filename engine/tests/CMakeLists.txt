@@ -13,6 +13,8 @@ add_executable(udeshi_engine_tests
   test_order_book.cpp
   test_matching_engine.cpp
   test_exchange.cpp
+  test_engine_contract.cpp
+  test_fault_injection.cpp
   test_properties.cpp)
 target_include_directories(udeshi_engine_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(udeshi_engine_tests PRIVATE
