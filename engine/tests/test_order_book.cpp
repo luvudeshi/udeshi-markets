@@ -125,9 +125,10 @@ TEST_F(OrderBookTest, InvariantCheckerDetectsCrossedBook) {
 
 TEST_F(OrderBookTest, InvariantCheckerDetectsOutOfOrderSequences) {
   book_.insert(make_order(1, Side::Buy, 100, 1, 5));
-  book_.insert(make_order(2, Side::Buy, 100, 1, 3));
+  book_.insert(make_order(2, Side::Buy, 100, 1, 6));
+  book_.find_mutable(2)->sequence = 3;  // Corrupt time priority behind insert()'s back.
   EXPECT_THROW(book_.check_invariants(), std::logic_error);
-  book_.remove(*book_.find_mutable(2));
+  book_.find_mutable(2)->sequence = 6;
 }
 
 TEST_F(OrderBookTest, ManyOrdersAcrossManyLevels) {
@@ -166,12 +167,51 @@ TEST_F(OrderBookTest, InsertRejectsMalformedOrdersWithoutSideEffects) {
   Order huge_price = make_order(3, Side::Sell, kMaxPrice + 1, 5, 3);
   Order overfilled = make_order(4, Side::Buy, 100, 5, 4);
   overfilled.remaining_quantity = 6;
-  for (const Order& order : {bad_side, zero_price, huge_price, overfilled}) {
+  Order wrong_instrument = make_order(5, Side::Buy, 100, 5, 5);
+  wrong_instrument.instrument = 1;
+  Order too_large = make_order(6, Side::Buy, 100, kMaxOrderQuantity + 1, 6);
+  for (const Order& order :
+       {bad_side, zero_price, huge_price, overfilled, wrong_instrument, too_large}) {
     EXPECT_THROW(book_.insert(order), std::invalid_argument) << order.id;
   }
   EXPECT_TRUE(book_.empty());
   EXPECT_EQ(book_.level_count(Side::Buy), 0u);
   EXPECT_EQ(book_.level_count(Side::Sell), 0u);
+}
+
+TEST_F(OrderBookTest, InsertRejectsOrdersThatWouldBreakTimePriority) {
+  book_.insert(make_order(1, Side::Sell, 100, 5, 10));
+  EXPECT_THROW(book_.insert(make_order(2, Side::Sell, 100, 5, 9)), std::invalid_argument);
+  EXPECT_THROW(book_.insert(make_order(3, Side::Sell, 100, 5, 10)), std::invalid_argument);
+  EXPECT_EQ(book_.order_count(), 1u);
+  EXPECT_EQ(book_.volume_at(Side::Sell, 100), 5);
+  EXPECT_EQ(book_.find(2), nullptr);
+  // An older sequence is fine at a different (new) level, and a younger one at this level.
+  EXPECT_NO_THROW(book_.insert(make_order(4, Side::Sell, 101, 5, 3)));
+  EXPECT_NO_THROW(book_.insert(make_order(5, Side::Sell, 100, 5, 11)));
+}
+
+TEST_F(OrderBookTest, CopiesOfRestingOrdersAreDetachedSnapshots) {
+  book_.insert(make_order(1, Side::Buy, 100, 5, 1));
+  book_.insert(make_order(2, Side::Buy, 100, 7, 2));
+  book_.insert(make_order(3, Side::Buy, 100, 9, 3));
+  const Order copy = *book_.find(2);  // A middle order, linked on both sides.
+  EXPECT_EQ(copy.id, 2u);
+  EXPECT_EQ(copy.remaining_quantity, 7);
+  EXPECT_EQ(copy.next(), nullptr);
+  EXPECT_EQ(copy.prev(), nullptr);
+  EXPECT_EQ(copy.level(), nullptr);
+  EXPECT_FALSE(copy.is_linked());
+  EXPECT_TRUE(book_.find(2)->is_linked());
+
+  Order assigned;
+  assigned = *book_.find(1);  // Assignment copies data but never links.
+  EXPECT_EQ(assigned.id, 1u);
+  EXPECT_FALSE(assigned.is_linked());
+  // A non-const copy cannot reach the live book.
+  Order mutable_copy = *book_.find(3);
+  EXPECT_EQ(mutable_copy.prev(), nullptr);
+  EXPECT_EQ(mutable_copy.level(), nullptr);
 }
 
 TEST_F(OrderBookTest, ManyOrdersAcrossFewLevelsSpanSeveralPoolChunks) {

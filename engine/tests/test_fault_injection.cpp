@@ -1,15 +1,19 @@
 // Allocation-failure injection.
 //
-// This translation unit replaces the global operator new / delete for the whole test binary
-// with versions that behave normally unless a test arms a failure countdown, in which case
-// the N-th subsequent allocation throws std::bad_alloc. That lets the tests drive every
-// allocation point of an operation and check its exception-safety guarantee.
+// This file is built as its own test executable (udeshi_fault_injection_tests) because it
+// replaces the global operator new / delete, which affects every allocation in the program.
+// Keeping it out of the main suite leaves ASan's own operator new/delete interception (and its
+// new/delete mismatch checks) in force there. The replacements behave normally unless a test
+// arms a failure countdown, in which case the N-th subsequent allocation throws
+// std::bad_alloc. That lets the tests drive every allocation point of an operation and check
+// its exception-safety guarantee.
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdlib>
 #include <new>
+#include <utility>
 
 #include "test_helpers.hpp"
 #include "udeshi/exchange.hpp"
@@ -40,6 +44,17 @@ class FailNthAllocation {
   ~FailNthAllocation() { g_allocations_before_failure = 0; }
   [[nodiscard]] static bool fired() { return g_allocations_before_failure == 0; }
 };
+
+// Counts the allocations `operation` performs, without failing any of them.
+template <typename Operation>
+long count_allocations(Operation&& operation) {
+  constexpr long kUnreachable = 1L << 40;
+  g_allocations_before_failure = kUnreachable;
+  operation();
+  const long used = kUnreachable - g_allocations_before_failure;
+  g_allocations_before_failure = 0;
+  return used;
+}
 
 }  // namespace
 
@@ -75,6 +90,13 @@ namespace {
 
 using testing::limit;
 using testing::market;
+
+// The fail-fast contract: no exception can escape order entry. (cancel() never allocates, so
+// only a compile-time check can pin it.)
+static_assert(noexcept(std::declval<MatchingEngine&>().submit(std::declval<const OrderRequest&>())));
+static_assert(noexcept(std::declval<MatchingEngine&>().cancel(InstrumentId{}, OrderId{})));
+static_assert(noexcept(std::declval<Exchange&>().submit(std::declval<const OrderRequest&>())));
+static_assert(noexcept(std::declval<Exchange&>().cancel(InstrumentId{}, OrderId{})));
 
 TEST(FaultInjection, AddInstrumentIsFailureAtomicAtEveryAllocationPoint) {
   int failure_points = 0;
@@ -115,15 +137,27 @@ TEST(FaultInjection, AddInstrumentIsFailureAtomicAtEveryAllocationPoint) {
   EXPECT_GE(failure_points, 2) << "expected several allocation points in add_instrument";
 }
 
-TEST(FaultInjection, OrderBookInsertIsFailureAtomic) {
+Order resting_buy(OrderId id, Price price, Sequence sequence) {
+  Order order;
+  order.id = id;
+  order.side = Side::Buy;
+  order.price = price;
+  order.original_quantity = 5;
+  order.remaining_quantity = 5;
+  order.sequence = sequence;
+  return order;
+}
+
+// Fails each allocation of `insert(order)` in turn on a book prepared by `prepare`, and checks
+// that the book is unchanged and still usable each time. Returns the number of failure points.
+template <typename Prepare>
+int check_insert_failure_atomicity(Prepare&& prepare, const Order& order) {
+  int failure_points = 0;
   for (long nth = 1; nth < 100; ++nth) {
     OrderBook book(0);
-    Order order;
-    order.id = 1;
-    order.side = Side::Buy;
-    order.price = 100;
-    order.original_quantity = 5;
-    order.remaining_quantity = 5;
+    prepare(book);
+    const BookSnapshot before = book.snapshot(100);
+    const std::size_t orders_before = book.order_count();
     bool threw = false;
     {
       FailNthAllocation inject(nth);
@@ -136,11 +170,34 @@ TEST(FaultInjection, OrderBookInsertIsFailureAtomic) {
     if (!threw) {
       break;
     }
-    EXPECT_TRUE(book.empty()) << nth;
-    EXPECT_EQ(book.level_count(Side::Buy), 0u) << nth;
+    ++failure_points;
+    EXPECT_EQ(book.snapshot(100), before) << nth;
+    EXPECT_EQ(book.order_count(), orders_before) << nth;
+    EXPECT_EQ(book.find(order.id), nullptr) << nth;
     EXPECT_NO_THROW(book.check_invariants()) << nth;
     EXPECT_NO_THROW(book.insert(order)) << nth;  // Retrying succeeds.
+    EXPECT_NO_THROW(book.check_invariants()) << nth;
   }
+  return failure_points;
+}
+
+TEST(FaultInjection, OrderBookInsertIntoEmptyBookIsFailureAtomic) {
+  // Allocations: id-index node (and buckets), map node for the new level, a pool chunk and the
+  // free-list buffer. A floor guards against the test silently exercising nothing.
+  const int failure_points =
+      check_insert_failure_atomicity([](OrderBook&) {}, resting_buy(1, 100, 1));
+  EXPECT_GE(failure_points, 3);
+}
+
+TEST(FaultInjection, OrderBookInsertIntoExistingLevelIsFailureAtomic) {
+  // The level exists and the pool has free nodes, so only the id index can fail.
+  const int failure_points = check_insert_failure_atomicity(
+      [](OrderBook& book) {
+        book.insert(resting_buy(1, 100, 1));
+        book.insert(resting_buy(2, 101, 2));
+      },
+      resting_buy(3, 100, 3));
+  EXPECT_GE(failure_points, 1);
 }
 
 // Allocation failure after matching has modified the book cannot be reported consistently,
@@ -157,6 +214,36 @@ TEST(FaultInjectionDeathTest, AllocationFailureDuringMatchingTerminates) {
         static_cast<void>(engine.submit(market(Side::Buy, 100, 2)));
       },
       "bad_alloc");
+}
+
+// The Exchange records market data after the engine has committed a match, so an allocation
+// failure there (e.g. while the recent-trades ring grows) must also terminate rather than
+// return a result that omits the trade. Every allocation point is exercised.
+TEST(FaultInjectionDeathTest, AllocationFailureAnywhereInExchangeSubmitTerminates) {
+  const auto prepare = [](Exchange& exchange) {
+    const InstrumentId id = exchange.add_instrument({"ACME", 0.01, 10'000});
+    exchange.submit(limit(Side::Sell, 10'000, 5, 1, id));
+    exchange.submit(limit(Side::Sell, 10'001, 5, 1, id));
+    return id;
+  };
+  const auto crossing_buy = [](InstrumentId id) { return limit(Side::Buy, 10'001, 15, 2, id); };
+
+  Exchange probe;
+  const InstrumentId probe_id = prepare(probe);
+  const long allocations = count_allocations([&] { probe.submit(crossing_buy(probe_id)); });
+  ASSERT_GE(allocations, 3) << "trades vector, ring growth and the resting remainder";
+
+  for (long nth = 1; nth <= allocations; ++nth) {
+    SCOPED_TRACE(::testing::Message() << "failing allocation " << nth << " of " << allocations);
+    Exchange exchange;
+    const InstrumentId id = prepare(exchange);
+    EXPECT_DEATH(
+        {
+          FailNthAllocation inject(nth);
+          static_cast<void>(exchange.submit(crossing_buy(id)));
+        },
+        "bad_alloc");
+  }
 }
 
 }  // namespace

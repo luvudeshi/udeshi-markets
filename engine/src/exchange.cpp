@@ -53,8 +53,8 @@ InstrumentId Exchange::add_instrument(InstrumentSpec spec) {
   if (symbol_index_.contains(spec.symbol)) {
     throw std::invalid_argument("Exchange: duplicate symbol '" + spec.symbol + "'");
   }
-  if (!std::isfinite(spec.tick_size) || spec.tick_size <= 0.0) {
-    throw std::invalid_argument("Exchange: tick size must be positive and finite");
+  if (!(spec.tick_size >= kMinTickSize && spec.tick_size <= kMaxTickSize)) {  // Also rejects NaN.
+    throw std::invalid_argument("Exchange: tick size must be within [1e-12, 1e12]");
   }
   if (spec.reference_price <= 0 || spec.reference_price > kMaxPrice) {
     throw std::invalid_argument("Exchange: reference price out of range for '" + spec.symbol +
@@ -145,20 +145,30 @@ CancelResult Exchange::cancel(InstrumentId instrument, OrderId order_id) noexcep
   return engine_.cancel(instrument, order_id);
 }
 
-void Exchange::record_trade(InstrumentState& instrument_state, const Trade& trade) {
-  MarketStatistics& stats = instrument_state.stats;
+void apply_trade(MarketStatistics& stats, const Trade& trade) noexcept {
   if (!stats.open_price) {
     stats.open_price = trade.price;
   }
   stats.last_price = trade.price;
   stats.high_price = std::max(stats.high_price.value_or(trade.price), trade.price);
   stats.low_price = std::min(stats.low_price.value_or(trade.price), trade.price);
-  stats.volume = saturating_add(stats.volume, trade.quantity);
+  const Quantity volume = saturating_add(stats.volume, trade.quantity);
+  stats.volume_saturated = stats.volume_saturated || volume - stats.volume != trade.quantity;
+  stats.volume = volume;
   stats.trade_count += 1;
   // price * quantity <= 1e18 is exact in int64; converting the exact product (rather than
   // multiplying two doubles) leaves no multiply-add for the compiler to fuse differently on
   // different targets.
   stats.notional += static_cast<double>(trade.price * trade.quantity);
+  if (stats.volume_saturated) {
+    stats.vwap.reset();
+  } else {
+    stats.vwap = stats.notional / static_cast<double>(stats.volume);
+  }
+}
+
+void Exchange::record_trade(InstrumentState& instrument_state, const Trade& trade) {
+  apply_trade(instrument_state.stats, trade);
 
   TradeRing& ring = instrument_state.recent;
   if (ring.trades.size() < recent_trade_capacity_) {
@@ -229,9 +239,6 @@ MarketStatistics Exchange::statistics(InstrumentId instrument) const {
   stats.bid_depth = book.total_volume(Side::Buy);
   stats.ask_depth = book.total_volume(Side::Sell);
   stats.resting_orders = book.order_count();
-  if (stats.volume > 0) {
-    stats.vwap = stats.notional / static_cast<double>(stats.volume);
-  }
   return stats;
 }
 
@@ -244,10 +251,13 @@ Price Exchange::to_ticks(InstrumentId instrument, double currency_price) const {
   if (!std::isfinite(currency_price)) {
     throw std::invalid_argument("Exchange::to_ticks: price must be finite");
   }
+  if (currency_price < 0.0) {  // -0.0 compares equal to 0.0 and is accepted.
+    throw std::invalid_argument("Exchange::to_ticks: price must be non-negative");
+  }
   const double ticks = currency_price / tick_size;
-  // Range-check before rounding and casting. Allowing half a tick either side of [0, kMaxPrice]
-  // admits floating-point noise around the bounds; rounding then lands inside the range.
-  if (!(ticks > -0.5 && ticks < static_cast<double>(kMaxPrice) + 0.5)) {
+  // Range-check before rounding and casting. Allowing half a tick above kMaxPrice admits
+  // floating-point noise at the bound; rounding then lands inside the range.
+  if (!(ticks < static_cast<double>(kMaxPrice) + 0.5)) {
     throw std::invalid_argument("Exchange::to_ticks: price out of range");
   }
   const double rounded = std::round(ticks);

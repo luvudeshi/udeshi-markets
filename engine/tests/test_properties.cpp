@@ -8,7 +8,10 @@
 //
 //  1. Differential equivalence with ReferenceEngine (reference_engine.hpp), a naive model of
 //     the documented contract: every field of every result (ids, sequence numbers, status,
-//     reasons, quantities, trades, self-trade-prevention cancels) and the full L3 book.
+//     reasons, quantities, trades, self-trade-prevention cancels), and the full L3 book. The
+//     book comparison, L2 aggregates, book-volume accounting and structural invariants run
+//     after every operation, except in the deep-book profile, where they run every 25
+//     operations to keep the naive model's O(n log n) book dump affordable.
 //
 //  2. Contract properties checked directly, so that a bug shared by engine and oracle would
 //     still be caught:
@@ -107,7 +110,7 @@ ProfileParams params(Profile profile) {
     case Profile::Narrow: return {"narrow", 3, 3, 1, 250, 80, 70, 1};
     case Profile::Moderate: return {"moderate", 25, 8, 2, 250, 80, 70, 1};
     case Profile::Wide: return {"wide", 400, 20, 3, 250, 80, 70, 1};
-    case Profile::Deep: return {"deep", 300, 30, 1, 50, 30, 20, 250};
+    case Profile::Deep: return {"deep", 300, 30, 1, 50, 30, 20, 25};
   }
   return {"?", 0, 0, 0, 0, 0, 0, 1};
 }
@@ -191,6 +194,9 @@ class StreamGenerator {
 
     if (rng_.chance(30)) {
       inject_invalid(r);
+      if (rng_.chance(300)) {
+        inject_invalid(r);  // Two independent faults: exercises the validation order.
+      }
     }
     return op;
   }
@@ -223,7 +229,10 @@ class StreamGenerator {
       case 1: r.quantity = kMaxOrderQuantity + rng_.between(1, 10); break;
       case 2: r.type = OrderType::Limit; r.price = -rng_.between(0, 5); break;
       case 3: r.type = OrderType::Limit; r.price = kMaxPrice + rng_.between(1, 10); break;
-      case 4: r.type = OrderType::Market; r.price = rng_.between(1, 50); break;
+      case 4:
+        r.type = OrderType::Market;
+        r.price = rng_.chance(500) ? rng_.between(1, 50) : -rng_.between(1, 50);
+        break;
       case 5: r.side = static_cast<Side>(rng_.between(2, 255)); break;
       case 6: r.type = static_cast<OrderType>(rng_.between(2, 255)); break;
       case 7: r.time_in_force = static_cast<TimeInForce>(rng_.between(2, 255)); break;
@@ -338,9 +347,14 @@ class ContractChecker {
     auto& resting_volume = expected_resting_.at(request.instrument);
     for (const RestingCancel& c : result.resting_cancels) {
       ASSERT_EQ(c.reason, CancelReason::SelfTradePrevention);
+      ASSERT_EQ(request.self_trade_prevention, SelfTradePrevention::CancelResting);
+      ASSERT_NE(request.owner, kAnonymousTrader) << "STP applied to an anonymous order";
       ASSERT_EQ(c.owner, request.owner);
       ASSERT_EQ(c.side, opposite(request.side));
       OrderInfo& victim = orders_.at(c.order_id);
+      ASSERT_EQ(victim.request.owner, request.owner) << "STP cancelled another owner's order";
+      ASSERT_TRUE(marketable(request, victim.request.price))
+          << "STP cancelled an own order that the incoming order could not have traded with";
       ASSERT_FALSE(victim.finished) << "STP cancelled an order that was no longer live";
       ASSERT_EQ(victim.request.instrument, request.instrument);
       ASSERT_EQ(c.price, victim.request.price);
@@ -368,6 +382,10 @@ class ContractChecker {
       ASSERT_EQ(t.seller, sell.request.owner);
       ASSERT_FALSE(buy.finished) << "finished buy order traded";
       ASSERT_FALSE(sell.finished) << "finished sell order traded";
+      if (request.self_trade_prevention != SelfTradePrevention::Allow &&
+          request.owner != kAnonymousTrader) {
+        ASSERT_NE(t.buyer, t.seller) << "self-trade despite self-trade prevention";
+      }
       if (buy.request.type == OrderType::Limit) {
         ASSERT_LE(t.price, buy.request.price) << "buy executed above its limit";
       }
@@ -394,7 +412,25 @@ class ContractChecker {
     incoming.cancelled += result.cancelled_quantity;
     const bool rests = result.status == OrderStatus::Resting;
     ASSERT_EQ(rests, result.resting_quantity > 0);
-    ASSERT_EQ(engine.book(request.instrument).find(result.order_id) != nullptr, rests);
+    const OrderBook& book = engine.book(request.instrument);
+    ASSERT_EQ(book.find(result.order_id) != nullptr, rests);
+
+    // Why matching stopped must agree with what is left on the opposite side.
+    const PriceLevel* opposite_best = book.side(opposite(request.side)).best();
+    if (result.cancel_reason == CancelReason::SelfTradePrevention) {
+      ASSERT_EQ(request.self_trade_prevention, SelfTradePrevention::CancelIncoming);
+      ASSERT_NE(request.owner, kAnonymousTrader);
+      ASSERT_NE(opposite_best, nullptr);
+      // CancelIncoming leaves the blocking own order at the front of the best level.
+      ASSERT_EQ(opposite_best->front()->owner, request.owner);
+      ASSERT_TRUE(marketable(request, opposite_best->price()));
+    } else if (result.filled_quantity < request.quantity) {
+      // Rested, or cancelled for lack of liquidity: nothing marketable may remain.
+      ASSERT_TRUE(opposite_best == nullptr || !marketable(request, opposite_best->price()))
+          << "remainder not matched although marketable liquidity remains";
+      ASSERT_EQ(result.cancel_reason,
+                rests ? CancelReason::None : CancelReason::NoLiquidity);
+    }
     if (rests) {
       resting_volume[side_index(request.side)] += result.resting_quantity;
     } else {
@@ -460,6 +496,14 @@ class ContractChecker {
     bool finished;
   };
   static std::size_t side_index(Side side) { return side == Side::Buy ? 0 : 1; }
+  // Whether the incoming order could trade against a resting order at `resting_price`.
+  static bool marketable(const OrderRequest& request, Price resting_price) {
+    if (request.type == OrderType::Market) {
+      return true;
+    }
+    return request.side == Side::Buy ? resting_price <= request.price
+                                     : resting_price >= request.price;
+  }
 
   std::unordered_map<OrderId, OrderInfo> orders_;
   std::vector<std::array<Quantity, 2>> expected_resting_;
@@ -563,7 +607,15 @@ TEST_P(RandomizedMatchingTest, MatchesReferenceAndPreservesContract) {
   EXPECT_GT(coverage.successful_cancels, ops / 50);
   EXPECT_GT(coverage.failed_cancels, 0);
   EXPECT_GT(coverage.rejects, 0);
-  EXPECT_GE(coverage.reject_reasons.size(), 7u);
+  const std::set<RejectReason> every_reject_reason = {
+      RejectReason::UnknownInstrument,          RejectReason::InvalidSide,
+      RejectReason::InvalidOrderType,           RejectReason::InvalidTimeInForce,
+      RejectReason::InvalidSelfTradePrevention, RejectReason::InvalidQuantity,
+      RejectReason::InvalidPrice,               RejectReason::MarketOrderWithPrice};
+  for (const RejectReason reason : every_reject_reason) {
+    EXPECT_TRUE(coverage.reject_reasons.contains(reason))
+        << "stream never produced reject reason " << to_string(reason);
+  }
   EXPECT_GT(coverage.multi_level_sweeps, 0);
   EXPECT_GT(coverage.market_partial, 0);
   EXPECT_GT(coverage.stp_resting_cancels, 0);
@@ -722,16 +774,18 @@ struct GoldenRun {
 // them on Linux/libstdc++ and macOS/libc++. If the engine's behaviour is changed on purpose,
 // update the constants and explain the change in the commit message.
 const GoldenRun kGoldenRuns[] = {
-    {{Profile::Narrow, 7, 20'000}, 0x8dbe168c961aa60cULL},
-    {{Profile::Moderate, 99, 20'000}, 0x713faa6e461e02a8ULL},
-    {{Profile::Wide, 12345, 10'000}, 0xc6d18c07126989f7ULL},
+    {{Profile::Narrow, 7, 20'000}, 0x1f7b7ad73d50dd68ULL},
+    {{Profile::Moderate, 99, 20'000}, 0x53b0a176b4662774ULL},
+    {{Profile::Wide, 12345, 10'000}, 0xfd7e7ba03d2bfbb5ULL},
 };
 
 TEST(DeterministicReplay, IndependentRunsMatchGoldenDigests) {
   for (const GoldenRun& golden : kGoldenRuns) {
     SCOPED_TRACE(::testing::Message() << golden.config);
-    // Keep the first engine alive while the second runs so the two use different heap
-    // addresses: any dependence on pointer values would make the digests differ.
+    // Keep the first engine alive while the second runs, so the two use different absolute
+    // heap addresses: dependence on address values (e.g. hashing pointers) makes the digests
+    // differ. Both engines allocate in the same pattern, so dependence on the relative order
+    // of addresses is not detected here; the golden values and the reference model catch it.
     MatchingEngine first;
     const std::uint64_t first_digest = run_and_digest(first, golden.config);
     MatchingEngine second;

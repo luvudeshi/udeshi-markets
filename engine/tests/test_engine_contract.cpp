@@ -211,6 +211,32 @@ TEST_F(EngineContractTest, ValidationReportsTheFirstFailingCheck) {
   EXPECT_EQ(engine_.submit(request).status, OrderStatus::Resting);
 }
 
+TEST_F(EngineContractTest, MarketOrderValidationReportsTheFirstFailingCheck) {
+  auto request = market(Side::Sell, 0, 1, 99);  // Unknown instrument, zero quantity...
+  request.time_in_force = static_cast<TimeInForce>(9);
+  request.price = 5;  // ...and a price on a market order.
+  EXPECT_EQ(engine_.submit(request).reject_reason, RejectReason::UnknownInstrument);
+  request.instrument = instrument_;
+  EXPECT_EQ(engine_.submit(request).reject_reason, RejectReason::InvalidTimeInForce);
+  request.time_in_force = TimeInForce::ImmediateOrCancel;
+  EXPECT_EQ(engine_.submit(request).reject_reason, RejectReason::InvalidQuantity);
+  request.quantity = 3;
+  EXPECT_EQ(engine_.submit(request).reject_reason, RejectReason::MarketOrderWithPrice);
+  request.price = 0;
+  const auto accepted = engine_.submit(request);
+  EXPECT_TRUE(accepted.accepted());
+  EXPECT_EQ(accepted.status, OrderStatus::Cancelled);  // Empty book: nothing to trade with.
+}
+
+TEST_F(EngineContractTest, MarketOrderWithAnyNonZeroPriceIsRejected) {
+  for (const Price price : {Price{-1}, Price{-1000}, Price{1}, kMaxPrice}) {
+    auto request = market(Side::Buy, 1);
+    request.price = price;
+    EXPECT_EQ(engine_.submit(request).reject_reason, RejectReason::MarketOrderWithPrice)
+        << price;
+  }
+}
+
 // ---- Status and reason reporting -----------------------------------------------------------
 
 TEST_F(EngineContractTest, IocPartialFillReportsNoLiquidity) {
@@ -269,6 +295,28 @@ TEST_F(EngineContractTest, CancelOfRestingSellReportsItsDetails) {
   EXPECT_EQ(cancel.side, Side::Sell);
   EXPECT_EQ(cancel.price, 105);
   EXPECT_EQ(cancel.cancelled_quantity, 9);
+}
+
+TEST_F(EngineContractTest, SelfTradePreventionIgnoresOwnOrdersThatAreNotMarketable) {
+  for (const SelfTradePrevention mode :
+       {SelfTradePrevention::CancelResting, SelfTradePrevention::CancelIncoming}) {
+    MatchingEngine engine;
+    const InstrumentId id = engine.add_instrument();
+    const auto own_ask = engine.submit(limit(Side::Sell, 105, 5, 7, id));
+    const auto own_bid = engine.submit(limit(Side::Buy, 95, 5, 7, id));
+    const auto buy = engine.submit(with_stp(limit(Side::Buy, 100, 5, 7, id), mode));
+    const auto sell = engine.submit(with_stp(limit(Side::Sell, 101, 5, 7, id), mode));
+    for (const auto* result : {&buy, &sell}) {
+      EXPECT_EQ(result->status, OrderStatus::Resting) << to_string(mode);
+      EXPECT_EQ(result->cancel_reason, CancelReason::None) << to_string(mode);
+      EXPECT_TRUE(result->resting_cancels.empty()) << to_string(mode);
+      EXPECT_TRUE(result->trades.empty()) << to_string(mode);
+    }
+    EXPECT_NE(engine.book(id).find(own_ask.order_id), nullptr);
+    EXPECT_NE(engine.book(id).find(own_bid.order_id), nullptr);
+    EXPECT_EQ(engine.book(id).order_count(), 4u);
+    engine.book(id).check_invariants();
+  }
 }
 
 // ---- Timestamps ----------------------------------------------------------------------------

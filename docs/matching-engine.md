@@ -53,6 +53,14 @@ PriceLevel
   is erased. `OrderPool` allocates `Order`s in 4096-element chunks that are never freed while the
   book lives, and reuses released nodes from a LIFO free list. `PriceLevel` and `OrderBook` are
   deliberately non-copyable and non-movable so that nothing can alias these pointers.
+* **Detached copies.** The list links live in a hook whose copy operations never transfer
+  links. Copying a resting `Order` gives a plain snapshot that cannot reach, corrupt or dangle
+  into the live book. Read-only views are deep-const: a `const Order` or `const PriceLevel` only
+  ever hands out `const` neighbours.
+* **Self-validating primitives.** `OrderBook::insert` rejects anything `check_invariants()` would
+  flag: wrong instrument, duplicate id, quantity or price out of range, invalid side, or a
+  sequence number that isn't younger than the level's tail. It gives the strong exception
+  guarantee.
 
 | Operation | Complexity |
 | --- | --- |
@@ -112,7 +120,9 @@ while remaining > 0:
 | 2 | Sell 5 @ 102 | asks: 101×10, 102×5 |
 | 3 | Buy 12 @ 102 | trades 10 @ 101 (seq 4) and 2 @ 102 (seq 5); asks: 102×3 |
 
-This exact scenario is `MatchingEngineTest.SpecExampleBuySweepsTwoAskLevels`.
+`MatchingEngineTest.SpecExampleBuySweepsTwoAskLevels` checks the fills and the resulting book,
+and `EngineContractTest.SpecExampleHasExactIdsAndSequences` checks the exact ids and sequence
+numbers in this table.
 
 ## Self-trade prevention (STP)
 
@@ -195,12 +205,16 @@ The `Exchange` derives every price-related number from executed trades or from t
 Nothing can set a price directly.
 
 * `last`, `open`, `high`, `low`, `trade_count`: updated from each trade.
-* `volume`: cumulative traded quantity. It **saturates** at `INT64_MAX` instead of overflowing.
-  Per-order bounds limit each trade but not the running total.
+* `volume`: cumulative traded quantity. It **saturates** at `INT64_MAX` instead of
+  overflowing, and sets `volume_saturated`. Per-order bounds limit each trade but not the
+  running total.
 * `notional = Σ price·quantity` in ticks, and `VWAP = notional / volume`. Each product is
   computed exactly in `int64` (at most 10¹⁸) and then added as a `double`. There is no
   floating-point multiply for a compiler to fuse, so the value is bit-identical on every
-  platform. A test pins an exact value whose products exceed 2⁵³.
+  platform. A test pins an exact value whose products exceed 2⁵³. Once volume has saturated,
+  VWAP is reported as undefined rather than as a ratio that no longer averages traded prices.
+* These per-trade updates live in a pure function, `apply_trade(MarketStatistics&, const
+  Trade&)`, so edge cases such as saturation are unit-tested directly.
 * `best_bid`, `best_ask`; `midprice = (bid + ask) / 2` and `spread = ask − bid`, both undefined
   unless both sides are present. These are returned as `std::optional`, never as a sentinel
   value.
@@ -210,9 +224,11 @@ Nothing can set a price directly.
   once and then overwrites the oldest entry, so steady-state recording never allocates.
 
 **Tick conversion.**
-* `to_ticks` accepts a non-negative currency price only if it lies on the tick grid, allowing
-  for floating-point rounding error: a relative tolerance of 16 machine epsilons, about 3.6e‑6
-  of a tick at `kMaxPrice`.
+* Tick sizes must lie in `[1e-12, 1e12]`. Within that range every on-grid price is a normal,
+  finite `double`, which the tolerance below assumes.
+* `to_ticks` rejects any negative price, however tiny. It accepts a non-negative price only if
+  it lies on the tick grid, allowing for floating-point rounding error: a relative tolerance of
+  16 machine epsilons, about 3.6e‑6 of a tick at `kMaxPrice`.
 * Off-grid prices are rejected, never rounded. Rounding could turn a buy limit of 12345.678 into
   12345.68, more aggressive than the price the caller stated.
 
@@ -250,10 +266,13 @@ ASan/UBSan on Linux (GCC, libstdc++) and macOS (Clang, libc++) in CI.
      and a deep book of 5k–10k resting orders spanning several pool chunks.
    * They mix limit, market and IOC orders, all STP modes, non-monotone timestamps, cancels of
      live, stale, unknown and wrong-instrument ids, and malformed input.
-   * After **every** operation, every field of every result and the full L3 book (owner,
-     sequence, original quantity, timestamp) must equal the model. L2 aggregates and the
-     structural invariants are checked at the same time. Coverage floors fail the test if the
-     generator stops reaching the interesting paths.
+   * After **every** operation, every field of every result must equal the model.
+   * The full L3 book (owner, sequence, original quantity, timestamp), L2 aggregates, per-side
+     volume accounting and the structural invariants are also compared after every operation,
+     except in the deep-book profile. There they run every 25 operations, because the naive
+     model's book dump costs O(n log n).
+   * A stream fails if it never produced each reject reason, or if it stops reaching other
+     interesting paths (sweeps, STP in both modes, market partial fills, multi-chunk books).
 4. **Contract properties checked directly**, independently of the model, so that a bug the
    model happened to share would still be caught:
    * sequence numbers are contiguous, and order and trade ids are dense;
@@ -264,22 +283,45 @@ ASan/UBSan on Linux (GCC, libstdc++) and macOS (Clang, libc++) in CI.
      * on each instrument and side, resting volume equals what was rested, minus fills against
        it, minus cancels;
    * a finished order never trades again, and the book holds an order exactly when the engine
-     reported it as resting.
+     reported it as resting;
+   * self-trade prevention only cancels the incoming owner's own, marketable orders, only in
+     the mode that asks for it, and never for anonymous orders. With STP active no self-trade
+     executes. A `CancelIncoming` stop leaves the blocking own order at the front of the best
+     opposite level;
+   * a remainder is rested or cancelled for lack of liquidity only when no marketable
+     liquidity is left.
 5. **Determinism.** Golden FNV‑1a digests of every output and the final books for fixed streams
-   are checked in. They must match on every platform, and are computed with two engines alive
-   at once, so that pointer-dependent behaviour would show up.
+   are checked in, and CI confirms they are identical on Linux/GCC/libstdc++ and
+   macOS/Clang/libc++.
+   * Each digest is computed by two engines alive at once, so dependence on absolute addresses
+     (for example hashing pointers) would show up.
+   * Dependence on the *relative* order of addresses is caught by the golden values and the
+     reference model instead, because both engines allocate in the same pattern.
 6. **Fault injection and memory safety.**
-   * A replacement `operator new` fails each allocation in turn to test the exception
-     guarantees above.
+   * A separate test binary replaces `operator new` and fails each allocation in turn. It
+     checks the exception guarantees above and the fail-fast termination of both
+     `MatchingEngine::submit` and `Exchange::submit`.
+   * The replacement lives in its own binary so the main suite keeps ASan's new/delete mismatch
+     checks. `static_assert`s pin the `noexcept` contract.
+   * Sanitizers instrument every target, googletest included; mixing instrumented and
+     uninstrumented code causes false container-overflow reports. The ASan preset enables
+     alloc/dealloc-mismatch and initialization-order checks on every platform.
    * `OrderPool` poisons released nodes under ASan, so reading through a stale `Order*` is
      reported like a heap use-after-free. A death test checks this.
 
 **Mutation testing.** [`tools/mutation_test.py`](../tools/mutation_test.py) applies realistic
 bugs, rebuilds each under ASan/UBSan, and requires the suite to fail. The bugs include:
 * off-by-one crossing checks, LIFO instead of FIFO, FIFO keyed on timestamp;
-* trading at the aggressor's price, reading a released order;
-* sequence gaps, per-instrument ids, wrong cancel reasons or sides;
-* a missing rollback, unpoisoned pool nodes, locale-dependent symbol checks.
+* trading at the aggressor's price, reading a released order, chunks freed with the wrong
+  `delete`;
+* sequence gaps, per-instrument ids, wrong cancel reasons or sides, a reordered validation
+  chain;
+* a missing rollback, unpoisoned pool nodes, locale-dependent symbol checks, an unsaturated
+  volume.
+
+The tool runs with the ASan preset's sanitizer options. A GitHub Actions workflow
+([`mutation.yml`](../.github/workflows/mutation.yml)) runs it weekly and on demand on Linux and
+macOS, so the result below is checked continuously rather than claimed once.
 
 A compile failure counts as a kill only if a `static_assert` fires, since some properties
 (deep-const accessors, saturating arithmetic) are tested at compile time. Any other build

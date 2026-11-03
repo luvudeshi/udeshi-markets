@@ -39,19 +39,33 @@ struct Order {
 
  private:
   friend class PriceLevel;
-  Order* prev_ = nullptr;
-  Order* next_ = nullptr;
-  PriceLevel* level_ = nullptr;  // The level this order rests in; null when not resting.
+
+  // Intrusive list hook. Copying never transfers links: a copy-constructed Order is detached,
+  // and assigning to an Order leaves its own links untouched. A copy of a resting order is
+  // therefore a plain snapshot that cannot reach (or corrupt) the live book and cannot dangle
+  // when the book changes, and assigning into a pool node never disturbs a list.
+  struct Links {
+    Order* prev = nullptr;
+    Order* next = nullptr;
+    PriceLevel* level = nullptr;  // The level this order rests in; null when not resting.
+
+    Links() = default;
+    Links(const Links& /*other*/) noexcept {}
+    Links& operator=(const Links& /*other*/) noexcept { return *this; }
+    ~Links() = default;
+  };
+  Links links_;
 
  public:
   // Deep-const navigation: a const Order only yields const neighbours, so read-only views of
   // the book (OrderBook::find, BookSide iteration) cannot be used to mutate it.
-  [[nodiscard]] const Order* next() const noexcept { return next_; }
-  [[nodiscard]] Order* next() noexcept { return next_; }
-  [[nodiscard]] const Order* prev() const noexcept { return prev_; }
-  [[nodiscard]] Order* prev() noexcept { return prev_; }
-  [[nodiscard]] const PriceLevel* level() const noexcept { return level_; }
-  [[nodiscard]] PriceLevel* level() noexcept { return level_; }
+  [[nodiscard]] const Order* next() const noexcept { return links_.next; }
+  [[nodiscard]] Order* next() noexcept { return links_.next; }
+  [[nodiscard]] const Order* prev() const noexcept { return links_.prev; }
+  [[nodiscard]] Order* prev() noexcept { return links_.prev; }
+  [[nodiscard]] const PriceLevel* level() const noexcept { return links_.level; }
+  [[nodiscard]] PriceLevel* level() noexcept { return links_.level; }
+  [[nodiscard]] bool is_linked() const noexcept { return links_.level != nullptr; }
   [[nodiscard]] Quantity filled_quantity() const noexcept {
     return original_quantity - remaining_quantity;
   }

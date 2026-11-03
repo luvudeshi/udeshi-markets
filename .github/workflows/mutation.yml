@@ -1,0 +1,35 @@
+name: Mutation testing
+
+# Rebuilds the engine once per hand-written mutant (tools/mutation_test.py) and fails if any
+# mutant survives, no longer applies, or does not compile. Too slow for every push, so it runs
+# weekly and on demand.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: mutants (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Ninja and a Latin-1 locale (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build locales
+          sudo locale-gen en_US en_US.UTF-8
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - name: Run mutants
+        run: python3 tools/mutation_test.py --jobs 3 --work-dir "$RUNNER_TEMP/mutation"

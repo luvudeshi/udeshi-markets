@@ -37,12 +37,12 @@ class PriceLevel {
 
   // Appends at the tail: the newest order has the lowest time priority.
   void push_back(Order* order) noexcept {
-    assert(order != nullptr && order->price == price_);
-    order->prev_ = tail_;
-    order->next_ = nullptr;
-    order->level_ = this;
+    assert(order != nullptr && order->price == price_ && !order->is_linked());
+    order->links_.prev = tail_;
+    order->links_.next = nullptr;
+    order->links_.level = this;
     if (tail_ != nullptr) {
-      tail_->next_ = order;
+      tail_->links_.next = order;
     } else {
       head_ = order;
     }
@@ -55,27 +55,29 @@ class PriceLevel {
   // the level total, so callers must not modify remaining_quantity before calling this
   // without also calling reduce().
   void erase(Order* order) noexcept {
-    assert(order != nullptr && order->level_ == this && order_count_ > 0);
-    if (order->prev_ != nullptr) {
-      order->prev_->next_ = order->next_;
+    assert(order != nullptr && order->links_.level == this && order_count_ > 0);
+    Order::Links& links = order->links_;
+    if (links.prev != nullptr) {
+      links.prev->links_.next = links.next;
     } else {
-      head_ = order->next_;
+      head_ = links.next;
     }
-    if (order->next_ != nullptr) {
-      order->next_->prev_ = order->prev_;
+    if (links.next != nullptr) {
+      links.next->links_.prev = links.prev;
     } else {
-      tail_ = order->prev_;
+      tail_ = links.prev;
     }
-    order->prev_ = nullptr;
-    order->next_ = nullptr;
-    order->level_ = nullptr;
+    links.prev = nullptr;
+    links.next = nullptr;
+    links.level = nullptr;
     total_quantity_ -= order->remaining_quantity;
     --order_count_;
   }
 
   // Records that `quantity` of an order in this level executed. Does not change priority.
   void reduce(Order* order, Quantity quantity) noexcept {
-    assert(order->level_ == this && quantity > 0 && quantity <= order->remaining_quantity);
+    assert(order->links_.level == this && quantity > 0 &&
+           quantity <= order->remaining_quantity);
     order->remaining_quantity -= quantity;
     total_quantity_ -= quantity;
   }

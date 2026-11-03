@@ -28,10 +28,13 @@ target_compile_options(udeshi_compile_options INTERFACE
   -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
   -Wnon-virtual-dtor -Wold-style-cast -Wcast-align -Woverloaded-virtual
   $<$<BOOL:${UDESHI_WARNINGS_AS_ERRORS}>:-Werror>)
+# Sanitizers apply to every target, third-party ones included: mixing instrumented and
+# uninstrumented copies of the same templates (e.g. libc++ containers in googletest) produces
+# false ASan container-overflow reports.
 if(UDESHI_SANITIZE)
-  target_compile_options(udeshi_compile_options INTERFACE
-    -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
-  target_link_options(udeshi_compile_options INTERFACE -fsanitize=address,undefined)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer
+                      -fno-sanitize-recover=all)
+  add_link_options(-fsanitize=address,undefined)
 endif()
 
 # Must be called in the top-level directory so that `ctest` run from the build root finds

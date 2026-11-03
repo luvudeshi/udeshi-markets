@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -33,7 +35,15 @@ POOL = "engine/include/udeshi/order_pool.hpp"
 EX = "engine/src/exchange.cpp"
 TY = "engine/include/udeshi/types.hpp"
 
-TEST_BINARY = "build/asan/engine/tests/udeshi_engine_tests"
+ORDER = "engine/include/udeshi/order.hpp"
+EXH = "engine/include/udeshi/exchange.hpp"
+
+# Both test executables; the fault-injection tests live in their own binary because they
+# replace the global operator new/delete.
+TEST_BINARIES = (
+    "build/asan/engine/tests/udeshi_engine_tests",
+    "build/asan/engine/tests/udeshi_fault_injection_tests",
+)
 
 
 @dataclass(frozen=True)
@@ -55,14 +65,15 @@ MUTANTS = [
     m("bids sorted ascending", (OBH, "return side == Side::Buy ? lhs > rhs : lhs < rhs;", "return lhs < rhs;")),
     m("LIFO within level", (ME, "Order& resting = *level->front();", "Order& resting = *level->back();")),
     m("FIFO keyed on timestamp", (PL,
-      "    order->prev_ = tail_;\n    order->next_ = nullptr;\n    order->level_ = this;\n"
-      "    if (tail_ != nullptr) {\n      tail_->next_ = order;\n    } else {\n      head_ = order;\n    }\n"
+      "    order->links_.prev = tail_;\n    order->links_.next = nullptr;\n    order->links_.level = this;\n"
+      "    if (tail_ != nullptr) {\n      tail_->links_.next = order;\n    } else {\n      head_ = order;\n    }\n"
       "    tail_ = order;\n",
-      "    order->level_ = this;\n    Order* after = tail_;\n"
-      "    while (after != nullptr && after->timestamp > order->timestamp) after = after->prev_;\n"
-      "    order->prev_ = after;\n    order->next_ = after != nullptr ? after->next_ : head_;\n"
-      "    if (order->next_ != nullptr) order->next_->prev_ = order; else tail_ = order;\n"
-      "    if (after != nullptr) after->next_ = order; else head_ = order;\n")),
+      "    order->links_.level = this;\n    Order* after = tail_;\n"
+      "    while (after != nullptr && after->timestamp > order->timestamp) after = after->links_.prev;\n"
+      "    order->links_.prev = after;\n"
+      "    order->links_.next = after != nullptr ? after->links_.next : head_;\n"
+      "    if (order->links_.next != nullptr) order->links_.next->links_.prev = order; else tail_ = order;\n"
+      "    if (after != nullptr) after->links_.next = order; else head_ = order;\n")),
     m("level-exhausted not tracked after fill", (ME,
       "level_exhausted = level_exhausted && fill == resting.remaining_quantity;", "level_exhausted = false;")),
     m("resting order overfilled", (ME,
@@ -128,16 +139,36 @@ MUTANTS = [
     m("zero quantity accepted", (ME, "request.quantity <= 0 ||", "request.quantity < 0 ||")),
     m("kMaxPrice rejected", (ME, "request.price > kMaxPrice)", "request.price >= kMaxPrice)")),
     m("market price check skipped", (ME, "if (request.price != 0) {", "if (false) {")),
+    m("negative market price accepted", (ME, "if (request.price != 0) {", "if (request.price > 0) {")),
+    m("market price checked before quantity", (ME,
+      "  if (request.quantity <= 0 || request.quantity > kMaxOrderQuantity) {",
+      "  if (request.type == OrderType::Market && request.price != 0) {\n"
+      "    return RejectReason::MarketOrderWithPrice;\n  }\n"
+      "  if (request.quantity <= 0 || request.quantity > kMaxOrderQuantity) {")),
     m("side not validated", (ME, "  if (!is_valid(request.side)) {\n    return RejectReason::InvalidSide;\n  }\n", "")),
     m("STP mode not validated", (ME,
       "  if (!is_valid(request.self_trade_prevention)) {\n    return RejectReason::InvalidSelfTradePrevention;\n  }\n", "")),
     m("book insert accepts invalid side", (OB,
       "if (!is_valid(order.side) || order.price <= 0 || order.price > kMaxPrice) {", "if (false) {")),
+    m("book insert accepts other instrument", (OB, "if (order.instrument != instrument_) {", "if (false) {")),
+    m("book insert accepts out-of-order sequence", (OB,
+      "if (!level.empty() && level.back()->sequence >= order.sequence) {", "if (false) {")),
+    m("order copies keep their links", (ORDER,
+      "    Links(const Links& /*other*/) noexcept {}",
+      "    Links(const Links& other) noexcept : prev(other.prev), next(other.next), level(other.level) {}")),
     # ---- Failure handling and memory safety ----------------------------------------------------
     m("submit not fail-fast",
       (ME, "SubmitResult MatchingEngine::submit(const OrderRequest& request) noexcept {",
            "SubmitResult MatchingEngine::submit(const OrderRequest& request) {"),
       (MEH, "SubmitResult submit(const OrderRequest& request) noexcept;", "SubmitResult submit(const OrderRequest& request);")),
+    m("Exchange submit not fail-fast",
+      (EX, "SubmitResult Exchange::submit(const OrderRequest& request) noexcept {",
+           "SubmitResult Exchange::submit(const OrderRequest& request) {"),
+      (EXH, "SubmitResult submit(const OrderRequest& request) noexcept;", "SubmitResult submit(const OrderRequest& request);")),
+    m("pool chunks freed with scalar delete",
+      (POOL, "std::vector<std::unique_ptr<Order[]>> chunks_;", "std::vector<std::unique_ptr<Order>> chunks_;"),
+      (POOL, "auto chunk = std::make_unique<Order[]>(kChunkSize);",
+             "auto chunk = std::unique_ptr<Order>(new Order[kChunkSize]);")),
     m("add_instrument skips symbol rollback", (EX,
       "      symbol_index_.erase(symbol_slot);\n", "      static_cast<void>(symbol_slot);\n")),
     m("released pool nodes not poisoned", (POOL, "    UDESHI_POISON(order, sizeof(Order));\n", "")),
@@ -151,7 +182,17 @@ MUTANTS = [
     m("tick tolerance relative to magnitude", (EX,
       "constexpr double kTickGridRelativeTolerance = 16.0 * std::numeric_limits<double>::epsilon();",
       "constexpr double kTickGridRelativeTolerance = 1e-6;")),
-    m("negative prices converted", (EX, "if (!(ticks > -0.5 &&", "if (!(ticks > -1e18 &&")),
+    m("negative prices converted", (EX, "if (currency_price < 0.0) {", "if (false) {")),
+    m("infinite and subnormal tick sizes accepted", (EX,
+      "if (!(spec.tick_size >= kMinTickSize && spec.tick_size <= kMaxTickSize)) {",
+      "if (std::isnan(spec.tick_size) || spec.tick_size <= 0.0) {")),
+    m("symbol length bound off by one", (EX, "symbol.size() > kMaxSymbolLength", "symbol.size() >= kMaxSymbolLength")),
+    m("reference price bound off by one", (EX,
+      "spec.reference_price > kMaxPrice)", "spec.reference_price >= kMaxPrice)")),
+    m("volume not saturated at call site", (EX,
+      "const Quantity volume = saturating_add(stats.volume, trade.quantity);",
+      "const Quantity volume = stats.volume + trade.quantity;")),
+    m("VWAP ignores volume saturation", (EX, "  if (stats.volume_saturated) {", "  if (false) {")),
     m("symbols may start with punctuation", (EX, "      !is_ascii_upper_or_digit(symbol.front())) {", "      false) {")),
     m("symbol check uses locale",
       (EX, "[[nodiscard]] constexpr bool is_ascii_upper_or_digit(char c) noexcept {\n"
@@ -165,8 +206,31 @@ MUTANTS = [
 ]
 
 
+def sanitizer_environment() -> dict[str, str]:
+    """The environment of the `asan` test preset (e.g. ASAN_OPTIONS), so mutants are judged
+    with the same sanitizer checks as `ctest --preset asan`."""
+    presets = json.loads((REPO / "CMakePresets.json").read_text())
+    preset = next(p for p in presets["testPresets"] if p["name"] == "asan")
+    return {**os.environ, **preset.get("environment", {})}
+
+
+ENVIRONMENT = sanitizer_environment()
+
+
 def run(cmd: list[str], cwd: pathlib.Path, timeout: int = 1800) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                          env=ENVIRONMENT)
+
+
+def run_tests(work: pathlib.Path, extra: list[str], timeout: int) -> tuple[int, str]:
+    """Runs every test binary, stopping at the first failing one."""
+    output = ""
+    for binary in TEST_BINARIES:
+        result = run([binary, "--gtest_brief=1", *extra], work, timeout=timeout)
+        output += result.stdout + result.stderr
+        if result.returncode != 0:
+            return result.returncode, output
+    return 0, output
 
 
 def prepare(work: pathlib.Path) -> None:
@@ -177,9 +241,9 @@ def prepare(work: pathlib.Path) -> None:
         result = run(step, work)
         if result.returncode != 0:
             raise RuntimeError(f"baseline step {step} failed:\n{result.stdout[-3000:]}{result.stderr[-3000:]}")
-    baseline = run([TEST_BINARY, "--gtest_brief=1"], work)
-    if baseline.returncode != 0:
-        raise RuntimeError(f"baseline tests fail in {work}:\n{baseline.stdout[-3000:]}")
+    code, output = run_tests(work, [], timeout=1800)
+    if code != 0:
+        raise RuntimeError(f"baseline tests fail in {work}:\n{output[-3000:]}")
 
 
 def evaluate(work: pathlib.Path, mutant: Mutant) -> tuple[str, str]:
@@ -202,8 +266,7 @@ def evaluate(work: pathlib.Path, mutant: Mutant) -> tuple[str, str]:
             return "INVALID", "mutant does not compile: " + next(
                 (line.strip() for line in build.stdout.splitlines() if "error:" in line), "?")
         try:
-            test = run([TEST_BINARY, "--gtest_brief=1", "--gtest_fail_fast"], work, timeout=600)
-            output, code = test.stdout + test.stderr, test.returncode
+            code, output = run_tests(work, ["--gtest_fail_fast"], timeout=600)
         except subprocess.TimeoutExpired:
             return "KILLED", "timeout"
         if code == 0:

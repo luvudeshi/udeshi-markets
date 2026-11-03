@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   engine:
     name: engine (${{ matrix.os }}, ${{ matrix.preset }})
@@ -15,10 +18,15 @@ jobs:
         os: [ubuntu-24.04, macos-15]
         preset: [debug, release, asan]
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Ninja (Linux)
+      - uses: actions/checkout@v5
+      - name: Install Ninja and a Latin-1 locale (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
+        # The Latin-1 locale makes SymbolValidationIgnoresTheProcessLocale meaningful on glibc,
+        # whose UTF-8 locales never classify single high bytes as letters.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build locales
+          sudo locale-gen en_US en_US.UTF-8
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja

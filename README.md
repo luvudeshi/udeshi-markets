@@ -29,8 +29,8 @@ simulation, API and frontend are under construction; see the
   - scenario and exact-contract tests;
   - a structural invariant checker;
   - differential testing against an independent naive model over about 250k randomized
-    operations (multi-instrument, malformed input, books of 10k+ orders), with full-book
-    comparison after every operation;
+    operations (multi-instrument, malformed input, books of 10k+ orders), comparing every
+    result and the full book;
   - quantity-conservation and limit-price properties;
   - golden cross-platform determinism digests;
   - allocation-failure injection;

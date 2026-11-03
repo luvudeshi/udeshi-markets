@@ -116,9 +116,12 @@ class OrderBook {
   }
 
   // ---- Mutation primitives (used by MatchingEngine) ----------------------------------------
-  // Inserts a new resting order at the tail of its price level. The id must be unused.
-  // Takes the order by value so the argument may safely alias a node just released to the
-  // pool (e.g. remove-then-reinsert), which allocation would otherwise overwrite.
+  // Inserts a new resting order at the tail of its price level. Throws std::invalid_argument,
+  // leaving the book unchanged, if the order would violate a book invariant: wrong instrument,
+  // duplicate id, quantity or price out of range, invalid side, or a sequence number not
+  // greater than that of the level's current tail (which would break time priority). Strong
+  // exception guarantee. The argument must not refer to an order already removed from the book
+  // (released nodes are poisoned under ASan); copy it before calling remove().
   Order& insert(Order order);
   // Executes `quantity` of a resting order. If it becomes fully filled it is removed from the
   // book and the pointer is invalidated; returns true in that case.

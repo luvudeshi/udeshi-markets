@@ -87,8 +87,14 @@ std::vector<const Order*> OrderBook::orders_at(Side side_to_query, Price price) 
 }
 
 Order& OrderBook::insert(Order order) {
-  if (order.remaining_quantity <= 0 || order.remaining_quantity > order.original_quantity) {
-    throw std::invalid_argument("OrderBook::insert: remaining quantity out of range");
+  // Every structural property that check_invariants() verifies is enforced here, so the
+  // public primitive cannot be used to build a book the checker would reject.
+  if (order.instrument != instrument_) {
+    throw std::invalid_argument("OrderBook::insert: order belongs to another instrument");
+  }
+  if (order.original_quantity <= 0 || order.original_quantity > kMaxOrderQuantity ||
+      order.remaining_quantity <= 0 || order.remaining_quantity > order.original_quantity) {
+    throw std::invalid_argument("OrderBook::insert: quantity out of range");
   }
   if (!is_valid(order.side) || order.price <= 0 || order.price > kMaxPrice) {
     throw std::invalid_argument("OrderBook::insert: invalid side or price");
@@ -101,9 +107,22 @@ Order& OrderBook::insert(Order order) {
   }
   Order* node = nullptr;
   try {
-    node = pool_.allocate();
+    PriceLevel& level = mutable_side(order.side).find_or_create(order.price);
+    // Time priority is list order, so a new order must be younger than the current tail. (If
+    // this throws, the level already existed and is unchanged.)
+    if (!level.empty() && level.back()->sequence >= order.sequence) {
+      throw std::invalid_argument("OrderBook::insert: sequence not after the level's tail");
+    }
+    try {
+      node = pool_.allocate();
+    } catch (...) {
+      if (level.empty()) {
+        mutable_side(order.side).erase(order.price);  // Drop the level we just created.
+      }
+      throw;
+    }
     *node = order;
-    mutable_side(order.side).find_or_create(order.price).push_back(node);
+    level.push_back(node);
   } catch (...) {
     if (node != nullptr) {
       pool_.release(node);

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <clocale>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -263,18 +264,95 @@ TEST_F(ExchangeTest, RejectsPunctuationOnlyAndLeadingPunctuationSymbols) {
 }
 
 TEST_F(ExchangeTest, SymbolValidationIgnoresTheProcessLocale) {
-  // Under some UTF-8 locales std::isupper accepts bytes >= 0x80; validation must not.
+  // Under some locales std::isupper accepts bytes >= 0x80 (e.g. 0xC0 is upper-case 'A-grave'
+  // in Latin-1); validation must not. The test is only meaningful in a locale where that
+  // happens, so it reports SKIPPED rather than passing vacuously when none is available.
   const std::string previous = std::setlocale(LC_ALL, nullptr);
-  for (const char* locale : {"C.UTF-8", "en_US.UTF-8", "en_US.ISO8859-1"}) {
-    if (std::setlocale(LC_ALL, locale) == nullptr) {
+  int effective_locales = 0;
+  for (const char* locale : {"C.UTF-8", "en_US.UTF-8", "en_US.ISO8859-1", "en_US.ISO-8859-1"}) {
+    if (std::setlocale(LC_ALL, locale) == nullptr || std::isupper(0xC0) == 0) {
       continue;
     }
+    ++effective_locales;
     EXPECT_THROW(exchange_.add_instrument({"\xC0\xC1", 0.01, 100}), std::invalid_argument)
         << locale;
     EXPECT_THROW(exchange_.add_instrument({"A\xDE", 0.01, 100}), std::invalid_argument)
         << locale;
   }
   std::setlocale(LC_ALL, previous.c_str());
+  if (effective_locales == 0) {
+    GTEST_SKIP() << "no installed locale classifies 0xC0 as upper-case";
+  }
+}
+
+TEST_F(ExchangeTest, AcceptsRegistrationValuesAtTheirBounds) {
+  EXPECT_NO_THROW(exchange_.add_instrument({"ABCDEFGHIJKLMNOP", 0.01, 100}));  // 16 chars.
+  EXPECT_NO_THROW(exchange_.add_instrument({"F", 0.01, 100}));
+  EXPECT_NO_THROW(exchange_.add_instrument({"MAXP", 0.01, kMaxPrice}));
+  EXPECT_NO_THROW(exchange_.add_instrument({"MINP", 0.01, 1}));
+  EXPECT_NO_THROW(exchange_.add_instrument({"TINY", kMinTickSize, 100}));
+  EXPECT_NO_THROW(exchange_.add_instrument({"HUGE", kMaxTickSize, 100}));
+}
+
+TEST_F(ExchangeTest, RejectsRegistrationValuesJustOutsideTheirBounds) {
+  EXPECT_THROW(exchange_.add_instrument({"ABCDEFGHIJKLMNOPQ", 0.01, 100}), std::invalid_argument);
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const double tick : {inf, -inf, 1e-310, kMinTickSize * 0.99, kMaxTickSize * 1.01}) {
+    EXPECT_THROW(exchange_.add_instrument({"BAD", tick, 100}), std::invalid_argument) << tick;
+  }
+  EXPECT_FALSE(exchange_.find_instrument("BAD").has_value());
+}
+
+TEST_F(ExchangeTest, TickConversionRejectsTinyNegativePrices) {
+  for (const double price : {-1e-17, -1e-300, -4.9e-324, -0.004}) {
+    EXPECT_THROW(static_cast<void>(exchange_.to_ticks(acme_, price)), std::invalid_argument)
+        << price;
+  }
+  EXPECT_EQ(exchange_.to_ticks(acme_, -0.0), 0);
+  EXPECT_EQ(exchange_.to_ticks(acme_, 0.0), 0);
+}
+
+Trade make_trade(Price price, Quantity quantity) {
+  Trade trade;
+  trade.price = price;
+  trade.quantity = quantity;
+  return trade;
+}
+
+TEST(ApplyTrade, TracksPriceExtremesVolumeAndVwap) {
+  MarketStatistics stats;
+  apply_trade(stats, make_trade(100, 10));
+  apply_trade(stats, make_trade(90, 30));
+  apply_trade(stats, make_trade(95, 60));
+  EXPECT_EQ(stats.open_price, 100);
+  EXPECT_EQ(stats.last_price, 95);
+  EXPECT_EQ(stats.high_price, 100);
+  EXPECT_EQ(stats.low_price, 90);
+  EXPECT_EQ(stats.volume, 100);
+  EXPECT_EQ(stats.trade_count, 3u);
+  EXPECT_DOUBLE_EQ(stats.notional, 1000.0 + 2700.0 + 5700.0);
+  ASSERT_TRUE(stats.vwap.has_value());
+  EXPECT_DOUBLE_EQ(*stats.vwap, 94.0);
+  EXPECT_FALSE(stats.volume_saturated);
+}
+
+TEST(ApplyTrade, VolumeSaturatesAndVwapBecomesUndefined) {
+  // Reaching INT64_MAX for real takes ~9.2e9 maximum-size trades, so start close to it.
+  MarketStatistics stats;
+  apply_trade(stats, make_trade(100, 1));
+  stats.volume = std::numeric_limits<Quantity>::max() - 5;
+  apply_trade(stats, make_trade(100, 5));  // Lands exactly on the maximum: not saturated.
+  EXPECT_EQ(stats.volume, std::numeric_limits<Quantity>::max());
+  EXPECT_FALSE(stats.volume_saturated);
+  EXPECT_TRUE(stats.vwap.has_value());
+  apply_trade(stats, make_trade(100, kMaxOrderQuantity));
+  EXPECT_EQ(stats.volume, std::numeric_limits<Quantity>::max());
+  EXPECT_TRUE(stats.volume_saturated);
+  EXPECT_FALSE(stats.vwap.has_value());
+  EXPECT_EQ(stats.trade_count, 3u);
+  apply_trade(stats, make_trade(100, 1));  // Saturation is sticky.
+  EXPECT_TRUE(stats.volume_saturated);
+  EXPECT_FALSE(stats.vwap.has_value());
 }
 
 TEST(ExchangeRecentTrades, RingBufferKeepsTheNewestTradesAcrossManyWraps) {

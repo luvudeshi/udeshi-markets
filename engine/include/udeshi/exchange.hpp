@@ -21,6 +21,12 @@ struct InstrumentSpec {
   Price reference_price = 0;  // Opening reference price in ticks (e.g. previous close).
 };
 
+// Accepted tick sizes. Within this range every on-grid price from 1 to kMaxPrice ticks is a
+// normal, finite double, which is what the floating-point tolerance in Exchange::to_ticks
+// assumes (subnormal tick sizes lose relative precision; huge ones overflow to infinity).
+inline constexpr double kMinTickSize = 1e-12;
+inline constexpr double kMaxTickSize = 1e12;
+
 // Market data for one instrument. Every price-derived field comes from executed trades or
 // from the live book; nothing here can be set directly.
 struct MarketStatistics {
@@ -31,11 +37,14 @@ struct MarketStatistics {
   std::optional<Price> high_price;
   std::optional<Price> low_price;
   Quantity volume = 0;  // Saturates at INT64_MAX instead of overflowing.
+  bool volume_saturated = false;
   std::uint64_t trade_count = 0;
   // Sum of price * quantity in tick units. Each product is computed exactly in int64 and then
   // added as a double, so the value is bit-identical on every platform (no FMA contraction).
   double notional = 0.0;
-  std::optional<double> vwap;  // notional / volume, in ticks.
+  // notional / volume, in ticks. Undefined before the first trade, and once volume has
+  // saturated (the ratio would no longer be an average of traded prices).
+  std::optional<double> vwap;
   std::optional<Price> best_bid;
   std::optional<Price> best_ask;
   std::optional<double> midprice;  // (best_bid + best_ask) / 2, in ticks; needs both sides.
@@ -50,6 +59,11 @@ struct MarketStatistics {
   }
 };
 
+// Updates trade-derived statistics (last / open / high / low, volume, count, notional, VWAP)
+// with one execution. Used by Exchange for every trade; exposed so that edge cases such as
+// volume saturation can be tested directly.
+void apply_trade(MarketStatistics& stats, const Trade& trade) noexcept;
+
 // A multi-instrument exchange: the matching engine plus symbology and market data.
 //
 // The exchange owns no simulation concepts (agents, fundamental values, news): a real venue
@@ -61,9 +75,10 @@ class Exchange {
   explicit Exchange(std::size_t recent_trade_capacity = kDefaultRecentTradeCapacity);
 
   // Registers an instrument. Throws std::invalid_argument for an invalid or duplicate symbol
-  // (symbols are 1-16 ASCII characters from A-Z 0-9 . -, starting with A-Z or 0-9), a
-  // non-positive / non-finite tick size, or an out-of-range reference price. Strong exception
-  // guarantee: on any failure the exchange and its engine are left unchanged.
+  // (symbols are 1-16 ASCII characters from A-Z 0-9 . -, starting with A-Z or 0-9), a tick
+  // size outside [kMinTickSize, kMaxTickSize] (or NaN), or a reference price outside
+  // (0, kMaxPrice]. Strong exception guarantee: on any failure the exchange and its engine are
+  // left unchanged.
   InstrumentId add_instrument(InstrumentSpec spec);
 
   [[nodiscard]] std::size_t instrument_count() const noexcept { return instruments_.size(); }
