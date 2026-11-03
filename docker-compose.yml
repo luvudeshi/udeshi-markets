@@ -1,0 +1,15 @@
+# Local stack. Phase 2 runs the API; the frontend (Phase 5) and PostgreSQL (Phase 4, for
+# experiment results) join here when they exist.
+#   docker compose up --build    then open http://localhost:8000/docs
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: udeshi-markets/api:dev
+    ports:
+      - "8000:8000"
+    environment:
+      UDESHI_CORS_ORIGINS: "http://localhost:3000"
+      UDESHI_LOG_LEVEL: "info"
+    restart: unless-stopped

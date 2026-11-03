@@ -344,6 +344,19 @@ def test_stream_snapshot_then_live_updates(client: TestClient) -> None:
         ]
 
 
+def test_stream_is_quiet_while_paused(client: TestClient) -> None:
+    simulation_id = started_paused(client)
+    manager = client.app.state.sessions  # type: ignore[attr-defined]
+    assert isinstance(manager, SessionManager)
+    session = manager.get(simulation_id)
+    subscriber = session.hub.subscribe(None)
+    for _ in range(5):
+        session.publish_changes()  # What the runner does on every tick.
+    assert subscriber.queue.qsize() == 0  # Nothing changed, so nothing was sent.
+    session.set_speed(3.0)
+    assert subscriber.queue.qsize() == 1
+
+
 def test_stream_rejects_unknown_simulation_and_symbols(client: TestClient) -> None:
     with (
         pytest.raises(WebSocketDisconnect) as missing,

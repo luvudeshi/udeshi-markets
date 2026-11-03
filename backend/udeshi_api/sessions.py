@@ -133,6 +133,7 @@ class LiveSession:
             return [self._trader]
 
         self._simulation = Simulation(config, participants, track_changes=True)
+        self._last_status: dict[str, Any] | None = None
         self.hub = StreamHub(settings.stream_queue_size)
         self.runner = LiveRunner(
             self,
@@ -353,7 +354,10 @@ class LiveSession:
 
     def publish_changes(self) -> None:
         changes = self._simulation.drain_changes()
-        self.hub.publish(self.status_message())
+        status_message = self.status_message()
+        if status_message != self._last_status:  # Unchanged while paused: say nothing.
+            self.hub.publish(status_message)
+            self._last_status = status_message
         self._publish(changes)
 
     def _publish(self, changes: ChangeSet) -> None:

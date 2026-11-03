@@ -33,3 +33,6 @@ test-results/
 
 # uv
 uv.lock.bak
+
+# Local tool configuration
+.claude/
