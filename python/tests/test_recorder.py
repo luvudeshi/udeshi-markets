@@ -111,5 +111,5 @@ def test_tape_is_public_and_optionally_bounded() -> None:
 
 
 def test_invalid_bar_width() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="bar width must be positive"):
         MarketRecorder([100], bar_width_ns=0)

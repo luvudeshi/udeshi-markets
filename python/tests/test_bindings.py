@@ -33,7 +33,9 @@ def exchange() -> Exchange:
     return ex
 
 
-def limit(side: Side, price: int, quantity: int, owner: int = 0, instrument: int = 0) -> OrderRequest:
+def limit(
+    side: Side, price: int, quantity: int, owner: int = 0, instrument: int = 0
+) -> OrderRequest:
     return OrderRequest(
         instrument=instrument, side=side, price=price, quantity=quantity, owner=owner
     )
@@ -93,9 +95,20 @@ def test_constants() -> None:
 def test_price_to_ticks_uses_the_exchange_rules() -> None:
     assert um.price_to_ticks(100.01, 0.01) == 10_001
     assert um.price_to_ticks(30000.05, 0.05) == 600_001
-    for price, tick in ((100.005, 0.01), (-0.01, 0.01), (math.nan, 0.01), (1.0, 0.0)):
-        with pytest.raises(ValueError):
-            um.price_to_ticks(price, tick)
+
+
+@pytest.mark.parametrize(
+    ("price", "tick", "message"),
+    [
+        (100.005, 0.01, "not a multiple of the tick size"),
+        (-0.01, 0.01, "non-negative"),
+        (math.nan, 0.01, "finite"),
+        (1.0, 0.0, "tick size"),
+    ],
+)
+def test_price_to_ticks_rejects_invalid_input(price: float, tick: float, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        um.price_to_ticks(price, tick)
 
 
 # ---- Matching through the bindings -----------------------------------------------------------
@@ -222,9 +235,9 @@ def test_lookup_errors_are_key_errors(exchange: Exchange) -> None:
 def test_invalid_registration_and_conversion_raise_value_error(exchange: Exchange) -> None:
     with pytest.raises(ValueError, match="duplicate"):
         exchange.add_instrument(symbol="ACME", tick_size=0.01, reference_price=1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="invalid symbol"):
         exchange.add_instrument(symbol="bad", tick_size=0.01, reference_price=1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a multiple of the tick size"):
         exchange.to_ticks(0, 100.005)
     assert exchange.to_ticks(1, 100.05) == 2_001
     assert exchange.to_currency(1, 2_001) == pytest.approx(100.05)
@@ -278,7 +291,9 @@ def test_random_order_flow_preserves_engine_invariants(
         if kind == "cancel":
             result = exchange.cancel(instrument, payload)
             if result.cancelled:
-                ledger.cancelled[payload] = ledger.cancelled.get(payload, 0) + result.cancelled_quantity
+                ledger.cancelled[payload] = (
+                    ledger.cancelled.get(payload, 0) + result.cancelled_quantity
+                )
             continue
         side, order_type, price, quantity, tif, stp, owner = payload
         submit = exchange.submit(
@@ -295,8 +310,7 @@ def test_random_order_flow_preserves_engine_invariants(
         )
         assert submit.accepted
         assert (
-            submit.filled_quantity + submit.resting_quantity + submit.cancelled_quantity
-            == quantity
+            submit.filled_quantity + submit.resting_quantity + submit.cancelled_quantity == quantity
         )
         assert sum(t.quantity for t in submit.trades) == submit.filled_quantity
         ledger.requested[submit.order_id] = quantity

@@ -31,7 +31,7 @@ def test_deterministic_log_matches_math_log_to_a_few_ulps() -> None:
 
 @pytest.mark.parametrize("x", [0.0, -1.0, math.inf, math.nan])
 def test_deterministic_log_rejects_invalid_arguments(x: float) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="positive and finite"):
         deterministic_log(x)
 
 
@@ -59,9 +59,10 @@ def test_same_seed_same_sequence_and_streams_are_independent() -> None:
     one = DeterministicRng.derive(9, "participant", 1)
     two = DeterministicRng.derive(9, "participant", 2)
     assert [one.next_u64() for _ in range(5)] != [two.next_u64() for _ in range(5)]
-    assert DeterministicRng.derive(9, "a", "bc").next_u64() != DeterministicRng.derive(
-        9, "ab", "c"
-    ).next_u64()
+    assert (
+        DeterministicRng.derive(9, "a", "bc").next_u64()
+        != DeterministicRng.derive(9, "ab", "c").next_u64()
+    )
 
 
 def test_uniform_and_randint_ranges() -> None:
@@ -92,19 +93,19 @@ def test_distribution_moments() -> None:
 
 def test_argument_validation() -> None:
     rng = DeterministicRng(1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="seed"):
         DeterministicRng(-1)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="seed"):
         DeterministicRng(1 << 64)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="low must not exceed high"):
         rng.randint(3, 2)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="low must not exceed high"):
         rng.uniform(2.0, 1.0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="probability"):
         rng.bernoulli(1.5)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="rate must be positive"):
         rng.exponential(0.0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="stddev"):
         rng.normal(0.0, -1.0)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="empty sequence"):
         rng.choice([])
