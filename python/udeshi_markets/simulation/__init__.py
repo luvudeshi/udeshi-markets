@@ -2,6 +2,7 @@
 
 from udeshi_markets.simulation.config import (
     DEFAULT_INSTRUMENTS,
+    MAX_BARS,
     InstrumentConfig,
     SimulationConfig,
 )
@@ -51,6 +52,7 @@ from udeshi_markets.simulation.simtime import (
 __all__ = [
     "DEFAULT_INSTRUMENTS",
     "HOUR",
+    "MAX_BARS",
     "MICROSECOND",
     "MILLISECOND",
     "MINUTE",

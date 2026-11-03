@@ -6,6 +6,10 @@ from udeshi_markets._engine import price_to_ticks
 from udeshi_markets.simulation.simtime import MINUTE, SECOND
 
 _MAX_SEED = (1 << 64) - 1
+MAX_BARS = 10_000_000
+"""Most OHLCV bars one simulation may record (instruments x duration / bar interval). Every bar
+is built eagerly, so this bounds a run's memory (about 150 bytes per bar) and the time spent
+closing bars when simulated time jumps."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +70,12 @@ class SimulationConfig:
             raise ValueError("order_latency_ns must be non-negative")
         if not 0 < self.bar_interval_ns <= self.duration_ns:
             raise ValueError("bar_interval_ns must be positive and at most duration_ns")
+        bars = -(-self.duration_ns // self.bar_interval_ns) * len(self.instruments)
+        if bars > MAX_BARS:
+            raise ValueError(
+                f"{bars} bars (instruments x duration / bar interval) is more than {MAX_BARS}: "
+                "use a wider bar interval or a shorter duration"
+            )
         if self.recent_trade_capacity <= 0:
             raise ValueError("recent_trade_capacity must be positive")
         if self.trade_history_limit is not None and self.trade_history_limit <= 0:

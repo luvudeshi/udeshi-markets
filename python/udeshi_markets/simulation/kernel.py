@@ -12,10 +12,11 @@ be compared for exact equality without storing their event logs.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import hashlib
 import struct
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -31,6 +32,7 @@ from udeshi_markets._engine import (
 )
 from udeshi_markets.simulation.config import SimulationConfig
 from udeshi_markets.simulation.events import (
+    INT64_MAX,
     UINT32_MAX,
     UINT64_MAX,
     CancelArrival,
@@ -58,6 +60,7 @@ class SimulationState(enum.Enum):
     PAUSED = "paused"
     STOPPED = "stopped"
     COMPLETED = "completed"
+    FAILED = "failed"  # A participant callback (or the engine) raised; the run cannot continue.
 
 
 _ACTIVE = frozenset({SimulationState.RUNNING, SimulationState.PAUSED})
@@ -96,8 +99,15 @@ class SimulationSummary:
 
 
 # Digest record kinds.
-_ORDER, _CANCEL, _WAKEUP = 1, 2, 3
-_CANCEL_STATUS_CODE = {status: code for code, status in enumerate(CancelStatus)}
+_ORDER, _CANCEL, _WAKEUP, _END = 1, 2, 3, 4
+# Cancel outcomes as digested. "Not the owner" is recorded but never reported: the participant
+# is told NOT_FOUND, so cancels cannot be used to discover other participants' orders.
+_CANCELLED, _NOT_FOUND, _NOT_OWNER, _UNKNOWN_INSTRUMENT = 0, 1, 2, 3
+_END_STATE_CODE = {
+    SimulationState.STOPPED: 1,
+    SimulationState.COMPLETED: 2,
+    SimulationState.FAILED: 3,
+}
 
 
 def _check_cancel_target(instrument: int, order_id: int) -> None:
@@ -222,7 +232,8 @@ class Simulation:
         self._queue = EventQueue()
         self._now = 0
         self._state = SimulationState.CREATED
-        self._dispatching = False
+        self._callback_depth = 0  # > 0 while a participant callback is running.
+        self._failure: BaseException | None = None
         self._digest = hashlib.blake2b(digest_size=16)
         self._events_processed = 0
         self._orders_submitted = 0
@@ -246,28 +257,41 @@ class Simulation:
         }
 
     def start(self) -> None:
+        self._require_outside_callbacks("start")
         self._require({SimulationState.CREATED}, "start")
         self._state = SimulationState.RUNNING
-        for pid, participant in self._participants.items():
-            participant.on_start(self._contexts[pid])
+        with self._failing_on_error():
+            for pid, participant in self._participants.items():
+                self._callback(_bind_start(participant, self._contexts[pid]))
 
     def pause(self) -> None:
+        self._require_outside_callbacks("pause")
         self._require({SimulationState.RUNNING}, "pause")
         self._state = SimulationState.PAUSED
 
     def resume(self) -> None:
+        self._require_outside_callbacks("resume")
         self._require({SimulationState.PAUSED}, "resume")
         self._state = SimulationState.RUNNING
 
     def stop(self) -> None:
+        """Ends the run at the current time. Everything that happened at that instant is kept,
+        so the last bar covers up to and including it."""
+        self._require_outside_callbacks("stop")
         self._require(_ACTIVE, "stop")
-        self._finish(SimulationState.STOPPED)
+        with self._failing_on_error():
+            self._finish(SimulationState.STOPPED, self._now + 1)
 
     def reset(self) -> None:
-        """Discards all state and rebuilds the simulation (with fresh participants)."""
-        if self._dispatching:
-            raise SimulationStateError("cannot reset from inside event dispatch")
+        """Discards all state and rebuilds the simulation (with fresh participants). Allowed in
+        any state, including FAILED, but not from inside a participant callback."""
+        self._require_outside_callbacks("reset")
         self._build()
+
+    @property
+    def failure(self) -> BaseException | None:
+        """The exception that moved the simulation to FAILED, if any."""
+        return self._failure
 
     # ---- Advancing simulated time --------------------------------------------------------------
     def step(self, max_events: int = 1) -> int:
@@ -275,39 +299,46 @@ class Simulation:
         if no event remains before the end time. Returns the number of events processed."""
         if max_events < 1:
             raise ValueError("max_events must be at least 1")
+        self._require_outside_callbacks("step")
         self._require(_ACTIVE, "step")
         end = self._config.duration_ns
         processed = 0
-        while processed < max_events:
-            next_time = self._queue.peek_time()
-            if next_time is None or next_time > end:
-                self._complete()
-                break
-            self._dispatch(self._queue.pop())
-            processed += 1
-        self._after_progress()
+        with self._failing_on_error():
+            while processed < max_events:
+                next_time = self._queue.peek_time()
+                if next_time is None or next_time >= end:  # The run covers [0, end).
+                    self._complete()
+                    break
+                self._dispatch(self._queue.pop())
+                processed += 1
+            self._after_progress()
         return processed
 
     def run_until(self, time_ns: int, max_events: int | None = None) -> int:
         """Processes every event at or before ``time_ns`` (capped at the end time), then advances
         the clock to that time. With ``max_events``, stops early (leaving the clock at the last
         processed event) once that many events have been processed."""
+        self._require_outside_callbacks("run")
         self._require(_ACTIVE, "run_until")
         if time_ns < self._now:
             raise ValueError("cannot run backwards in simulated time")
+        if max_events is not None and max_events < 1:
+            raise ValueError("max_events must be at least 1")
         end = self._config.duration_ns
         target = min(time_ns, end)
         processed = 0
-        while max_events is None or processed < max_events:
-            next_time = self._queue.peek_time()
-            if next_time is None or next_time > target:
-                self._now = target
-                if target == end:
-                    self._complete()
-                break
-            self._dispatch(self._queue.pop())
-            processed += 1
-        self._after_progress()
+        with self._failing_on_error():
+            while max_events is None or processed < max_events:
+                next_time = self._queue.peek_time()
+                # The run covers [0, end): an event at exactly the end time is never processed.
+                if next_time is None or next_time > target or next_time >= end:
+                    self._now = target
+                    if target == end:
+                        self._complete()
+                    break
+                self._dispatch(self._queue.pop())
+                processed += 1
+            self._after_progress()
         return processed
 
     def run(self) -> SimulationSummary:
@@ -322,6 +353,8 @@ class Simulation:
     def schedule_order(self, participant_id: int, intent: OrderIntent) -> None:
         self._require_participant(participant_id)
         self._require(_ACTIVE, "schedule an order")
+        if not isinstance(intent, OrderIntent):
+            raise TypeError(f"expected an OrderIntent, not {type(intent).__name__}")
         self._queue.push(
             self._now + self._config.order_latency_ns, OrderArrival(participant_id, intent)
         )
@@ -336,8 +369,12 @@ class Simulation:
         )
 
     def schedule_wakeup(self, participant_id: int, delay_ns: int, tag: str = "") -> None:
-        if delay_ns < 0:
-            raise ValueError("wakeup delay must be non-negative")
+        # Checked here, in the participant's own call, so a bad value cannot fail later in the
+        # middle of dispatch (a float delay would make the clock a float).
+        require_int("wakeup delay", delay_ns, 0, INT64_MAX)
+        if not isinstance(tag, str):
+            raise TypeError(f"wakeup tag must be a str, not {type(tag).__name__}")
+        tag.encode()  # Raises UnicodeEncodeError now rather than at dispatch.
         self._require_participant(participant_id)
         self._require(_ACTIVE, "schedule a wakeup")
         self._queue.push(self._now + delay_ns, Wakeup(participant_id, tag))
@@ -346,16 +383,20 @@ class Simulation:
         """Processes an order immediately at the current simulated time (manual trading). Not
         callable from inside a participant callback; participants use ``ctx.submit``."""
         self._require_external_action(participant_id, "submit an order")
-        report = self._execute_order(participant_id, intent)
-        self._after_progress()
+        if not isinstance(intent, OrderIntent):
+            raise TypeError(f"expected an OrderIntent, not {type(intent).__name__}")
+        with self._failing_on_error():
+            report = self._execute_order(participant_id, intent)
+            self._after_progress()
         return report
 
     def cancel_now(self, participant_id: int, instrument: int, order_id: int) -> CancelReport:
         """Processes a cancel immediately at the current simulated time (manual trading)."""
         self._require_external_action(participant_id, "cancel an order")
         _check_cancel_target(instrument, order_id)
-        report = self._execute_cancel(participant_id, instrument, order_id)
-        self._after_progress()
+        with self._failing_on_error():
+            report = self._execute_cancel(participant_id, instrument, order_id)
+            self._after_progress()
         return report
 
     # ---- Observation ---------------------------------------------------------------------------
@@ -437,8 +478,11 @@ class Simulation:
             participant = self._participants[event.participant_id]
             ctx = self._contexts[event.participant_id]
             tag = event.tag
-            self._digest_record(_WAKEUP, event.participant_id)
-            self._digest.update(tag.encode())
+            raw = tag.encode()
+            # Length-prefixed, so a tag can never be read as the start of another record.
+            self._digest.update(
+                struct.pack("<BqqI", _WAKEUP, self._now, event.participant_id, len(raw)) + raw
+            )
             self._callback(lambda: participant.on_wakeup(ctx, tag))
 
     def _execute_order(self, participant_id: int, intent: OrderIntent) -> OrderReport:
@@ -538,18 +582,19 @@ class Simulation:
         status: CancelStatus
         cancelled_quantity = 0
         if not 0 <= instrument < self._exchange.instrument_count:
-            status = CancelStatus.UNKNOWN_INSTRUMENT
+            status, code = CancelStatus.UNKNOWN_INSTRUMENT, _UNKNOWN_INSTRUMENT
         else:
             order = self._exchange.order(instrument, order_id)
             if order is None:
-                status = CancelStatus.NOT_FOUND
+                status, code = CancelStatus.NOT_FOUND, _NOT_FOUND
             elif order.owner != participant_id:
-                status = CancelStatus.NOT_OWNER  # Never touches the exchange.
+                # Indistinguishable from a missing order, and the exchange is never touched.
+                status, code = CancelStatus.NOT_FOUND, _NOT_OWNER
             else:
                 result = self._exchange.cancel(instrument, order_id)
                 if not result.cancelled:
                     raise AssertionError("exchange refused to cancel a resting order")
-                status = CancelStatus.CANCELLED
+                status, code = CancelStatus.CANCELLED, _CANCELLED
                 cancelled_quantity = result.cancelled_quantity
                 self._dirty.add(instrument)
         # The order id is the engine's unsigned 64-bit type, so it is packed unsigned. For ids
@@ -562,7 +607,7 @@ class Simulation:
                 participant_id,
                 instrument,
                 order_id,
-                _CANCEL_STATUS_CODE[status],
+                code,
                 cancelled_quantity,
             )
         )
@@ -581,28 +626,53 @@ class Simulation:
         return report
 
     def _callback(self, call: Callable[[], None]) -> None:
-        self._dispatching = True
+        self._callback_depth += 1  # A counter, not a flag: callbacks can nest.
         try:
             call()
         finally:
-            self._dispatching = False
+            self._callback_depth -= 1
+
+    @contextlib.contextmanager
+    def _failing_on_error(self) -> Iterator[None]:
+        """An exception while the simulation is changing (from a participant callback or the
+        engine) can leave it half-updated: for example, some participants notified of a trade
+        and others not. The simulation then moves to FAILED, a terminal state, instead of
+        letting a caller carry on from an inconsistent state. The exception propagates."""
+        try:
+            yield
+        except BaseException as error:
+            if self._state is not SimulationState.FAILED:
+                self._failure = error
+                self._state = SimulationState.FAILED
+                self._recorder.finalize(self._now + 1)
+                if self._track_changes:
+                    self._pending_bars.extend(self._recorder.drain_closed_bars())
+                self._digest_end(SimulationState.FAILED)
+            raise
 
     def _after_progress(self) -> None:
-        self._recorder.advance_to(self._now)
+        if self._state in _ACTIVE:
+            self._recorder.advance_to(self._now)
         if self._track_changes:
             self._pending_bars.extend(self._recorder.drain_closed_bars())
 
     def _complete(self) -> None:
         self._now = self._config.duration_ns
-        self._finish(SimulationState.COMPLETED)
+        self._finish(SimulationState.COMPLETED, self._now)
 
-    def _finish(self, state: SimulationState) -> None:
-        self._recorder.finalize(self._now)
+    def _finish(self, state: SimulationState, end: int) -> None:
+        """Ends the run. The recorded data covers simulated time [0, end)."""
+        self._recorder.finalize(end)
         if self._track_changes:
             self._pending_bars.extend(self._recorder.drain_closed_bars())
+        self._digest_end(state)
         self._state = state
         for pid, participant in self._participants.items():
-            participant.on_stop(self._contexts[pid])
+            self._callback(_bind_stop(participant, self._contexts[pid]))
+
+    def _digest_end(self, state: SimulationState) -> None:
+        # How and when the run ended is part of what happened.
+        self._digest.update(struct.pack("<Bqq", _END, self._now, _END_STATE_CODE[state]))
 
     # ---- Digest ---------------------------------------------------------------------------------
     def _digest_record(self, kind: int, *fields: int) -> None:
@@ -657,16 +727,25 @@ class Simulation:
             raise KeyError(f"unknown participant {participant_id}")
 
     def _require_external_action(self, participant_id: int, action: str) -> None:
-        if self._dispatching:
-            raise SimulationStateError(
-                f"cannot {action} immediately from inside a participant callback"
-            )
+        self._require_outside_callbacks(f"{action} immediately")
         self._require_participant(participant_id)
         self._require(_ACTIVE, action)
+
+    def _require_outside_callbacks(self, action: str) -> None:
+        if self._callback_depth:
+            raise SimulationStateError(f"cannot {action} from inside a participant callback")
 
 
 def _opposite(side: Side) -> Side:
     return Side.SELL if side is Side.BUY else Side.BUY
+
+
+def _bind_start(participant: Participant, ctx: SimulationContext) -> Callable[[], None]:
+    return lambda: participant.on_start(ctx)
+
+
+def _bind_stop(participant: Participant, ctx: SimulationContext) -> Callable[[], None]:
+    return lambda: participant.on_stop(ctx)
 
 
 def _bind_fill(participant: Participant, ctx: SimulationContext, fill: Fill) -> Callable[[], None]:

@@ -18,7 +18,6 @@ class PublicTrade:
     """A trade as published on the tape: no order ids or trader identities."""
 
     trade_id: int
-    sequence: int
     time: int
     instrument: int
     price: int
@@ -91,6 +90,7 @@ class MarketRecorder:
         self._bar_width = bar_width_ns
         self._report_closed = report_closed_bars
         self._unreported: list[Bar] = []
+        self._finalized = False
         self._histories = [
             _InstrumentHistory(instrument, price, trade_history_limit)
             for instrument, price in enumerate(reference_prices)
@@ -101,6 +101,7 @@ class MarketRecorder:
         return self._bar_width
 
     def record(self, trade: Trade) -> PublicTrade:
+        self._require_open()
         history = self._histories[trade.instrument]
         index = trade.timestamp // self._bar_width
         if index < history.bar_index:
@@ -118,7 +119,6 @@ class MarketRecorder:
 
         public = PublicTrade(
             trade_id=trade.id,
-            sequence=trade.sequence,
             time=trade.timestamp,
             instrument=trade.instrument,
             price=trade.price,
@@ -136,24 +136,39 @@ class MarketRecorder:
         Safe to call at the current simulated time: any later trade has a timestamp >= time and
         so belongs to a bar that is still open.
         """
+        self._require_open()
         closed: list[Bar] = []
         index = time // self._bar_width
         for history in self._histories:
             closed.extend(self._close_until(history, index))
         return closed
 
-    def finalize(self, end_time: int) -> list[Bar]:
-        """Closes the final (possibly partial) bar of every instrument at ``end_time``."""
-        closed = self.advance_to(end_time)
+    def finalize(self, end: int) -> list[Bar]:
+        """Ends recording: the data covers simulated time [0, ``end``). Closes every bar, the
+        last one cut short at ``end``. A final bar covering a single instant is kept only if
+        something traded in it. Nothing can be recorded afterwards.
+
+        A run that completes at its duration D ends at D. A run stopped at time t ends at t + 1,
+        so that trades at the instant t itself fall in the final bar."""
+        closed = self.advance_to(end)
         for history in self._histories:
             start = history.bar_index * self._bar_width
-            if start < end_time:
-                bar = self._make_bar(history, start, end_time)
+            if start < end and (history.bar_trades or start + 1 < end):
+                bar = self._make_bar(history, start, end)
                 self._store(history, bar)
                 closed.append(bar)
                 history.bar_index += 1
                 self._reset_bar(history)
+        self._finalized = True
         return closed
+
+    @property
+    def finalized(self) -> bool:
+        return self._finalized
+
+    def _require_open(self) -> None:
+        if self._finalized:
+            raise RuntimeError("the recorder was finalized: the run has ended")
 
     def drain_closed_bars(self) -> list[Bar]:
         """Bars closed since the previous call, in closing order (requires report_closed_bars)."""

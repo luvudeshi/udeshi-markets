@@ -20,8 +20,9 @@ if TYPE_CHECKING:
 
 class CancelStatus(enum.Enum):
     CANCELLED = "cancelled"
-    NOT_FOUND = "not_found"  # Never existed, already filled, or already cancelled.
-    NOT_OWNER = "not_owner"  # Resting, but owned by someone else; the exchange is not touched.
+    # Never existed, already filled or cancelled, or resting but someone else's: a participant
+    # cannot tell these apart, so cancels reveal nothing about other participants' orders.
+    NOT_FOUND = "not_found"
     UNKNOWN_INSTRUMENT = "unknown_instrument"
 
 

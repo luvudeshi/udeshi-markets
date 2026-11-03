@@ -46,11 +46,15 @@ def test_streams_are_pinned_across_platforms_and_versions() -> None:
     rng = DeterministicRng.derive(7, "participant", 3)
     draws = (rng.random(), rng.randint(1, 6), rng.normal(), rng.exponential(2.0))
     assert draws == (
-        0.8103691390646864,
+        0.8711260141407213,
         4,
-        -0.89940353785017,
-        0.14771159776391848,
+        -1.1445649836442424,
+        0.02505234500430746,
     )
+    rng = DeterministicRng(2024)
+    assert [rng.uniform(-1.0, 1.0) for _ in range(2)] == [0.24553107329221935, -0.8055361830246146]
+    assert [rng.choice("abcdefg") for _ in range(5)] == ["d", "f", "e", "a", "e"]
+    assert [rng.bernoulli(0.3) for _ in range(6)] == [False, True, False, False, False, False]
 
 
 def test_same_seed_same_sequence_and_streams_are_independent() -> None:

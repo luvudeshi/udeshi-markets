@@ -17,6 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from udeshi_api.main import create_app
 from udeshi_api.routes import health, markets, simulations, stream
+from udeshi_api.schemas import OrderIn
 from udeshi_api.sessions import MANUAL_TRADER_ID, LiveSession, SessionManager
 from udeshi_api.settings import Settings
 from udeshi_markets import OrderRequest, Side
@@ -580,3 +581,25 @@ def test_stream_announces_deletion(client: TestClient) -> None:
         while not messages or messages[-1]["type"] != "closed":
             messages.append(ws.receive_json())
         assert messages[-1] == {"type": "closed"}
+
+
+def test_a_failed_run_is_reported_with_its_error(client: TestClient) -> None:
+    """A participant failure moves the kernel to FAILED; the API reports that state and the
+    error, and a reset clears both."""
+    simulation_id = started_paused(client)
+    manager = client.app.state.sessions  # type: ignore[attr-defined]
+    assert isinstance(manager, SessionManager)
+    session = manager.get(simulation_id)
+
+    def explode(*_: object) -> None:
+        raise RuntimeError("strategy bug")
+
+    session.trader.on_order_report = explode  # type: ignore[method-assign, assignment]
+    with pytest.raises(RuntimeError, match="strategy bug"):
+        session.submit("ACME", OrderIn(side="buy", price=0.99, quantity=1))
+    session.record_failure(RuntimeError("strategy bug"))
+    described = client.get(f"/api/simulations/{simulation_id}").json()
+    assert (described["state"], described["error"]) == ("failed", "RuntimeError: strategy bug")
+    assert client.post(f"/api/simulations/{simulation_id}/resume").status_code == 409
+    reset = action(client, simulation_id, "reset")
+    assert (reset["state"], reset["error"]) == ("created", None)

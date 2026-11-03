@@ -87,8 +87,32 @@ def test_finalize_closes_a_partial_final_bar() -> None:
     recorder = MarketRecorder([100], bar_width_ns=10)
     recorder.record(_trades((12, 101, 1))[0])  # Closes [0, 10) as a side effect.
     assert [(b.start, b.end, b.close) for b in recorder.finalize(15)] == [(10, 15, 101)]
-    assert recorder.finalize(15) == []
     assert [(b.start, b.end, b.close) for b in recorder.bars(0)] == [(0, 10, 100), (10, 15, 101)]
+    assert recorder.finalized
+
+
+def test_nothing_can_be_recorded_after_finalize() -> None:
+    recorder = MarketRecorder([100], bar_width_ns=10)
+    recorder.finalize(10)
+    trade = _trades((12, 101, 1))[0]
+    for call in (
+        lambda: recorder.record(trade),
+        lambda: recorder.advance_to(20),
+        lambda: recorder.finalize(20),
+    ):
+        with pytest.raises(RuntimeError, match="finalized"):
+            call()
+
+
+def test_a_trade_at_the_final_instant_is_in_a_bar() -> None:
+    """A run stopped at t ends at t + 1, so a trade at exactly t, even on a bar boundary, lands
+    in a final bar covering that instant. Without a trade there, no such bar is made."""
+    recorder = MarketRecorder([100], bar_width_ns=10)
+    recorder.record(_trades((20, 103, 4))[0])
+    assert [(b.start, b.end, b.volume) for b in recorder.finalize(21)] == [(20, 21, 4)]
+    quiet = MarketRecorder([100], bar_width_ns=10)
+    assert [(b.start, b.end) for b in quiet.finalize(21)] == [(0, 10), (10, 20)]
+    assert sum(b.volume for b in recorder.bars(0)) == 4
 
 
 def test_out_of_order_trades_are_rejected() -> None:
@@ -105,6 +129,9 @@ def test_tape_is_public_and_optionally_bounded() -> None:
         public = recorder.record(trade)
         assert not hasattr(public, "buyer")
         assert not hasattr(public, "buy_order_id")
+        # The engine's global sequence would reveal other participants' unseen actions (rejected
+        # or cancelled orders) through the gaps between consecutive trades.
+        assert not hasattr(public, "sequence")
     assert [t.price for t in recorder.trades(0)] == [101, 102]
     assert [t.price for t in recorder.trades(0, limit=1)] == [102]
     assert recorder.trades_recorded(0) == 3

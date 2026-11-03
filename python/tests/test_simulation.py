@@ -236,8 +236,10 @@ def test_cancels_are_ownership_checked() -> None:
     simulation.run()
     intruder = simulation.participants[9]
     assert isinstance(intruder, Intruder)
+    # Someone else's resting order is reported exactly like a missing one, so cancels cannot be
+    # used to map other participants' orders.
     assert [c.status for c in intruder.cancels] == [
-        CancelStatus.NOT_OWNER,
+        CancelStatus.NOT_FOUND,
         CancelStatus.NOT_FOUND,
         CancelStatus.UNKNOWN_INSTRUMENT,
     ]
@@ -356,9 +358,10 @@ def test_stop_finalizes_bars_and_notifies_participants() -> None:
     simulation.run_until(2_500_000_000)
     simulation.stop()
     assert stopped == [2_500_000_000]
+    # The run covers every instant up to and including the stop time.
     assert [(b.start, b.end) for b in simulation.recorder.bars(0)][-1] == (
         2 * SECOND,
-        2_500_000_000,
+        2_500_000_001,
     )
 
 
@@ -468,7 +471,9 @@ def test_golden_digest() -> None:
 
 GOLDEN_TRADES = 68
 GOLDEN_VOLUME = 102
-GOLDEN_DIGEST = "e82478004d70ca387c97747531ab4551"
+GOLDEN_DIGEST = (
+    "9275ba9c5dbb77e78a824fe77ec7fc4b"  # Re-pinned: tags length-prefixed, end record added.
+)
 
 
 # ---- Configuration ---------------------------------------------------------------------------

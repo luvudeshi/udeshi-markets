@@ -71,7 +71,7 @@ SNAPSHOT_BARS = 100
 STREAM_BAR_LIMIT = 1_000
 """Most bars per symbol in one ``bars`` update; earlier ones are counted in ``omitted``."""
 
-_FINISHED = frozenset({SimulationState.STOPPED, SimulationState.COMPLETED})
+_FINISHED = frozenset({SimulationState.STOPPED, SimulationState.COMPLETED, SimulationState.FAILED})
 
 _SIDES = {"buy": Side.BUY, "sell": Side.SELL}
 _TIME_IN_FORCE = {"gtc": TimeInForce.GOOD_TILL_CANCEL, "ioc": TimeInForce.IMMEDIATE_OR_CANCEL}
@@ -92,6 +92,7 @@ _STATE_NAMES: dict[SimulationState, StateName] = {
     SimulationState.PAUSED: "paused",
     SimulationState.STOPPED: "stopped",
     SimulationState.COMPLETED: "completed",
+    SimulationState.FAILED: "failed",
 }
 
 

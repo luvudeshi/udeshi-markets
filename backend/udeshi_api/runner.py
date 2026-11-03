@@ -20,7 +20,7 @@ from udeshi_markets.simulation import SECOND, Simulation, SimulationState
 
 logger = logging.getLogger("udeshi_api.runner")
 
-_FINISHED = frozenset({SimulationState.STOPPED, SimulationState.COMPLETED})
+_FINISHED = frozenset({SimulationState.STOPPED, SimulationState.COMPLETED, SimulationState.FAILED})
 
 
 class Paced(Protocol):

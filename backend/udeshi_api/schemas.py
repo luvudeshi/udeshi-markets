@@ -13,7 +13,7 @@ from udeshi_markets import MAX_ORDER_QUANTITY
 SYMBOL_PATTERN = r"^[A-Z0-9][A-Z0-9.\-]{0,15}$"
 
 SideName = Literal["buy", "sell"]
-StateName = Literal["created", "running", "paused", "stopped", "completed"]
+StateName = Literal["created", "running", "paused", "stopped", "completed", "failed"]
 StatusName = Literal["rejected", "resting", "filled", "cancelled"]
 
 

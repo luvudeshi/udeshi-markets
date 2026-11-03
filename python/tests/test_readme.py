@@ -20,4 +20,4 @@ def test_readme_example_runs_and_is_deterministic() -> None:
             exec(compile(blocks[0], str(README), "exec"), {"__name__": "readme_example"})
         outputs.append(stdout.getvalue())
     assert outputs[0] == outputs[1]
-    assert outputs[0] == "9117 27497 06cba3e40afda4eea0180156babb2511\n"
+    assert outputs[0] == "9263 28424 dbcb62714eb57ef0c337fed2bbec35d5\n"

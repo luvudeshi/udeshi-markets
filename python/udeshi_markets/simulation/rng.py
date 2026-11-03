@@ -21,7 +21,10 @@ from collections.abc import Sequence
 from typing import Final, TypeVar
 
 _MASK64: Final = (1 << 64) - 1
-_LN2: Final = 0.6931471805599453  # Nearest double to ln(2).
+# ln(2) split in two (as in fdlibm): the high part has only 32 significant bits, so
+# exponent * _LN2_HI is exact for every double's exponent, and _LN2_LO carries the rest.
+_LN2_HI: Final = 6.93147180369123816490e-01
+_LN2_LO: Final = 1.90821492927058770002e-10
 _SQRT2: Final = 1.4142135623730951
 _INV_2_53: Final = 1.0 / (1 << 53)
 
@@ -31,9 +34,11 @@ T = TypeVar("T")
 def deterministic_log(x: float) -> float:
     """Natural logarithm computed with exactly rounded arithmetic only.
 
-    Accurate to a few ulps for positive finite ``x``; raises ValueError otherwise. Uses
-    x = m * 2**e with m in [sqrt(1/2), sqrt(2)), then ln(m) = 2 * atanh(s) with s = (m-1)/(m+1),
-    |s| < 0.172, summed as an odd power series to below double precision.
+    Within 2 ulps of the true value for positive finite ``x`` (checked against a 60-digit
+    reference); raises ValueError otherwise. Uses x = m * 2**e with m in [sqrt(1/2), sqrt(2)),
+    then ln(m) = 2 * atanh(s) = 2s + 2s * z * (1/3 + z/5 + z**2/7 + ...) with s = (m-1)/(m+1),
+    z = s**2 < 0.0295. The series is evaluated in Horner form, smallest term first, and
+    e * ln(2) is added in two parts, so rounding errors do not accumulate.
     """
     if not (x > 0.0 and math.isfinite(x)):
         raise ValueError(f"deterministic_log: argument must be positive and finite, got {x!r}")
@@ -42,18 +47,11 @@ def deterministic_log(x: float) -> float:
         mantissa *= 2.0
         exponent -= 1
     s = (mantissa - 1.0) / (mantissa + 1.0)
-    s2 = s * s
-    term = s
-    total = 0.0
-    k = 1
-    while True:  # Converges in at most ~12 terms since s**2 < 0.0295.
-        contribution = term / k
-        if abs(contribution) < 1e-18 * abs(total) or contribution == 0.0:
-            break
-        total += contribution
-        term *= s2
-        k += 2
-    return exponent * _LN2 + 2.0 * total
+    z = s * s
+    series = 0.0
+    for k in range(27, 1, -2):  # z**13 / 29 < 1e-21: far below double precision.
+        series = series * z + 1.0 / k
+    return exponent * _LN2_HI + (2.0 * s + (2.0 * s * z * series + exponent * _LN2_LO))
 
 
 class DeterministicRng:
@@ -68,11 +66,16 @@ class DeterministicRng:
 
     @classmethod
     def derive(cls, seed: int, *stream: int | str) -> "DeterministicRng":
-        """An independent generator for a named stream (e.g. one per participant)."""
+        """An independent generator for a named stream (e.g. one per participant). Labels are
+        encoded with their type, so the int 3 and the string "3" name different streams."""
+        if not 0 <= seed <= _MASK64:
+            raise ValueError("seed must be an integer in [0, 2**64)")
         hasher = hashlib.blake2b(digest_size=8)
-        hasher.update(struct.pack("<Q", seed & _MASK64))
+        hasher.update(struct.pack("<Q", seed))
         for label in stream:
-            encoded = str(label).encode()
+            if isinstance(label, bool) or not isinstance(label, int | str):
+                raise TypeError(f"stream labels must be int or str, not {type(label).__name__}")
+            encoded = (b"i" if isinstance(label, int) else b"s") + str(label).encode()
             hasher.update(struct.pack("<I", len(encoded)))
             hasher.update(encoded)
         return cls(int.from_bytes(hasher.digest(), "little"))

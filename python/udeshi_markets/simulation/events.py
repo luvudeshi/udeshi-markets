@@ -98,8 +98,7 @@ class EventQueue:
         self._next_sequence = 0
 
     def push(self, time: int, event: Event) -> ScheduledEvent:
-        if time < 0:
-            raise ValueError("events cannot be scheduled before time zero")
+        require_int("event time", time, 0, INT64_MAX)  # Never before time zero.
         sequence = self._next_sequence
         self._next_sequence += 1
         # The sequence is unique, so tuples never fall through to comparing events.
