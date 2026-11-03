@@ -202,7 +202,8 @@ MUTANTS = [
            "         std::isdigit(static_cast<unsigned char>(c)) != 0;"),
       (EX, "#include <algorithm>\n", "#include <algorithm>\n#include <cctype>\n")),
     m("volume overflows instead of saturating", (TY,
-      "return total > kMax - increment ? kMax : total + increment;", "return total + increment;")),
+      "return total > kMax - increment ? kMax : total + increment;",
+      "return total + increment + (kMax - kMax);")),  # Keeps kMax used so the mutant compiles.
 ]
 
 
