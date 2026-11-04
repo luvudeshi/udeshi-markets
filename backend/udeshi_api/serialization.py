@@ -73,7 +73,7 @@ def bar_out(bar: Bar, fmt: PriceFormat) -> BarOut:
 
 
 def _market_fields(
-    symbol: str, stats: MarketStatistics, fmt: PriceFormat
+    symbol: str, stats: MarketStatistics, fmt: PriceFormat, fundamental: float | None
 ) -> dict[str, float | int | str | None]:
     reference = fmt.price(stats.reference_price)
     last = fmt.maybe_price(stats.last_price)
@@ -100,17 +100,24 @@ def _market_fields(
         "best_ask": fmt.maybe_price(stats.best_ask),
         "midprice": fmt.fractional(stats.midprice),
         "spread": fmt.maybe_price(stats.spread),
+        "fundamental_value": None if fundamental is None else round(fundamental, fmt.places + 2),
     }
 
 
-def market_out(exchange: Exchange, instrument: int, fmt: PriceFormat) -> MarketOut:
+def market_out(
+    exchange: Exchange, instrument: int, fmt: PriceFormat, fundamental: float | None = None
+) -> MarketOut:
+    """``fundamental`` is the environment's hidden value, in currency (None: no environment)."""
     symbol = exchange.instrument(instrument).symbol
-    return MarketOut.model_validate(_market_fields(symbol, exchange.statistics(instrument), fmt))
+    fields = _market_fields(symbol, exchange.statistics(instrument), fmt, fundamental)
+    return MarketOut.model_validate(fields)
 
 
-def market_detail_out(exchange: Exchange, instrument: int, fmt: PriceFormat) -> MarketDetailOut:
+def market_detail_out(
+    exchange: Exchange, instrument: int, fmt: PriceFormat, fundamental: float | None = None
+) -> MarketDetailOut:
     stats = exchange.statistics(instrument)
-    fields = _market_fields(exchange.instrument(instrument).symbol, stats, fmt)
+    fields = _market_fields(exchange.instrument(instrument).symbol, stats, fmt, fundamental)
     fields.update(
         bid_depth=stats.bid_depth,
         ask_depth=stats.ask_depth,

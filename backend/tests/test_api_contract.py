@@ -205,6 +205,7 @@ def test_market_book_tape_orders_and_bars_payloads(client: TestClient) -> None:
         "best_ask": 1.02,
         "midprice": 1.005,
         "spread": 0.03,
+        "fundamental_value": None,  # No market environment in this simulation.
     }
     assert get(client, "/api/markets") == [summary]
     assert get(client, "/api/markets/ACME") == {
@@ -321,6 +322,9 @@ def test_configuration_round_trips(client: TestClient) -> None:
         "order_latency_ms": 12.5,
         "bar_interval_seconds": 0.5,
         "symbols": ["ACME"],
+        "initial_cash": 1_000_000.0,
+        "agents": None,
+        "market": None,
         "error": None,
     }
     config = manager(client).get(created["id"]).simulation.config

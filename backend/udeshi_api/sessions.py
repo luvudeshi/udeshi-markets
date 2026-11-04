@@ -12,25 +12,35 @@ import asyncio
 import contextlib
 import logging
 import secrets
-from collections import OrderedDict, deque
+import time
+from collections import OrderedDict
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from fastapi import status
 
 from udeshi_api.errors import ApiError, not_found
 from udeshi_api.hub import Message, StreamHub
+from udeshi_api.manual import MANUAL_TRADER_ID as MANUAL_TRADER_ID  # Re-exported.
+from udeshi_api.manual import ManualTrader
+from udeshi_api.participants import STATUS_NAMES, ParticipantViews, news_out, reason_name
 from udeshi_api.runner import LiveRunner
 from udeshi_api.schemas import (
+    AgentDetailOut,
+    AgentOut,
+    AgentsIn,
     CancelOut,
     FillOut,
+    MarketIn,
+    NewsOut,
     OpenOrderOut,
     OrderBookOut,
     OrderIn,
     OrderOut,
+    PairIn,
     SimulationOut,
     SimulationSummaryOut,
     StateName,
-    StatusName,
 )
 from udeshi_api.serialization import (
     PriceFormat,
@@ -41,19 +51,18 @@ from udeshi_api.serialization import (
     trade_out,
 )
 from udeshi_api.settings import Settings
-from udeshi_markets import OrderStatus, OrderType, SelfTradePrevention, Side, TimeInForce
+from udeshi_markets import OrderType, SelfTradePrevention, Side, TimeInForce
+from udeshi_markets.agents import PopulationConfig, market_simulation
 from udeshi_markets.simulation import (
     Bar,
-    CancelReport,
     CancelStatus,
     ChangeSet,
-    Fill,
+    EnvironmentConfig,
+    MarketEnvironment,
     OrderIntent,
-    OrderReport,
     Participant,
     Simulation,
     SimulationConfig,
-    SimulationContext,
     SimulationState,
     SimulationStateError,
     to_seconds,
@@ -61,15 +70,16 @@ from udeshi_markets.simulation import (
 
 logger = logging.getLogger("udeshi_api.sessions")
 
-MANUAL_TRADER_ID = 1_000_000
-"""Participant id of the API user. Simulated agents use ids below this."""
-
 SNAPSHOT_TRADES = 100
 """Most recent trades per symbol in a stream snapshot."""
 SNAPSHOT_BARS = 100
 """Most recent closed bars per symbol in a stream snapshot."""
 STREAM_BAR_LIMIT = 1_000
 """Most bars per symbol in one ``bars`` update; earlier ones are counted in ``omitted``."""
+SNAPSHOT_NEWS = 20
+"""Most recent news items in a stream snapshot."""
+LEADERBOARD_SECONDS = 1.0
+"""Wall-clock interval between ``agents`` leaderboard messages (sent only when it changed)."""
 
 _FINISHED = frozenset({SimulationState.STOPPED, SimulationState.COMPLETED, SimulationState.FAILED})
 
@@ -79,12 +89,6 @@ _STP = {
     "allow": SelfTradePrevention.ALLOW,
     "cancel_resting": SelfTradePrevention.CANCEL_RESTING,
     "cancel_incoming": SelfTradePrevention.CANCEL_INCOMING,
-}
-_STATUS_NAMES: dict[OrderStatus, StatusName] = {
-    OrderStatus.REJECTED: "rejected",
-    OrderStatus.RESTING: "resting",
-    OrderStatus.FILLED: "filled",
-    OrderStatus.CANCELLED: "cancelled",
 }
 _STATE_NAMES: dict[SimulationState, StateName] = {
     SimulationState.CREATED: "created",
@@ -96,46 +100,29 @@ _STATE_NAMES: dict[SimulationState, StateName] = {
 }
 
 
-class ManualTrader(Participant):
-    """The API user's participant. It trades only through the API (``submit_now``)."""
-
-    def __init__(self) -> None:
-        super().__init__(MANUAL_TRADER_ID, "manual")
-        self.open_orders: dict[int, int] = {}  # Resting order id -> instrument.
-        self.recent_fills: deque[Fill] = deque(maxlen=1_000)
-        self._capture: list[Fill] | None = None
-
-    def begin_capture(self) -> None:
-        self._capture = []
-
-    def end_capture(self) -> list[Fill]:
-        captured, self._capture = self._capture or [], None
-        return captured
-
-    def on_fill(self, ctx: SimulationContext, fill: Fill) -> None:
-        self.recent_fills.append(fill)
-        if self._capture is not None:
-            self._capture.append(fill)
-        order = ctx.own_order(fill.instrument, fill.order_id)
-        if order is None:  # Fully filled.
-            self.open_orders.pop(fill.order_id, None)
-
-    def on_order_report(self, ctx: SimulationContext, report: OrderReport) -> None:
-        if report.status is OrderStatus.RESTING:
-            self.open_orders[report.order_id] = report.intent.instrument
-
-    def on_cancel(self, ctx: SimulationContext, report: CancelReport) -> None:
-        if report.status is CancelStatus.CANCELLED:
-            self.open_orders.pop(report.order_id, None)
-
-
 class LiveSession:
     """One simulation being run in real time, with its runner and stream hub."""
 
-    def __init__(self, session_id: str, config: SimulationConfig, speed: float, settings: Settings):
+    def __init__(
+        self,
+        session_id: str,
+        config: SimulationConfig,
+        speed: float,
+        settings: Settings,
+        *,
+        population: PopulationConfig | None = None,
+        environment: EnvironmentConfig | None = None,
+    ):
+        """With ``population``, trading agents share the market with the API user (in
+        ``environment``, which is then required). With only ``environment``, the market has
+        fundamental values and exogenous events but no agents."""
+        if population is not None and environment is None:
+            raise ValueError("agents need a market environment")
         self._id = session_id
         self.created_at = datetime.now(UTC)
         self.config = config
+        self.population = population
+        self.environment_config = environment
         self._speed = speed
         self._settings = settings
         self.error: str | None = None
@@ -145,15 +132,32 @@ class LiveSession:
             self._trader = ManualTrader()
             return [self._trader]
 
-        self._simulation = Simulation(config, participants, track_changes=True)
+        if population is not None and environment is not None:
+            self._simulation = market_simulation(
+                config, population, environment, extra=participants, track_changes=True
+            )
+        elif environment is not None:
+            market = environment
+            self._simulation = Simulation(
+                config,
+                participants,
+                environment=lambda: MarketEnvironment(market),
+                track_changes=True,
+            )
+        else:
+            self._simulation = Simulation(config, participants, track_changes=True)
+        self.formats = [PriceFormat(instrument.tick_size) for instrument in config.instruments]
+        self.views = ParticipantViews(self._simulation, self.formats)
         self._last_status: Message | None = None
+        self.clock: Callable[[], float] = time.monotonic  # Paces leaderboard messages.
+        self._leaderboard_at: float | None = None
+        self._last_leaderboard: list[Message] | None = None
         self.hub = StreamHub(settings.stream_queue_size, self.snapshot_message)
         self.runner = LiveRunner(
             self,
             tick_seconds=settings.tick_seconds,
             max_events_per_tick=settings.max_events_per_tick,
         )
-        self.formats = [PriceFormat(instrument.tick_size) for instrument in config.instruments]
 
     # ---- Paced protocol ----------------------------------------------------------------------
     @property
@@ -178,6 +182,32 @@ class LiveSession:
     @property
     def trader(self) -> ManualTrader:
         return self._trader
+
+    @property
+    def has_market(self) -> bool:
+        """True when the session has agents or a market environment."""
+        return self.environment_config is not None
+
+    def fundamental(self, instrument: int) -> float | None:
+        """The environment's hidden value in currency (the observer's view; None if there is no
+        environment). Before the start it is the reference price, where the environment starts."""
+        environment = self._simulation.environment
+        if environment is None:
+            return None
+        if self._simulation.state is SimulationState.CREATED:
+            spec = self.config.instruments[instrument]
+            return spec.reference_price_ticks * spec.tick_size
+        return environment.fundamental(instrument)
+
+    def agents(self) -> list[AgentOut]:
+        return self.views.leaderboard()
+
+    def agent(self, agent_id: int) -> AgentDetailOut:
+        return self.views.detail(agent_id)
+
+    def news(self, limit: int) -> list[NewsOut]:
+        symbols = self.config.symbols
+        return [news_out(item, symbols) for item in self._simulation.recent_news(limit)]
 
     def instrument(self, symbol: str) -> int:
         found = self._simulation.exchange.find_instrument(symbol)
@@ -214,6 +244,7 @@ class LiveSession:
         # updates cannot express the change: every subscriber gets a fresh snapshot instead.
         self._simulation.drain_changes()
         self._last_status = self.status_message()
+        self._last_leaderboard = None
         self.hub.resync_all()
 
     def step(self, events: int) -> int:
@@ -270,9 +301,9 @@ class LiveSession:
         return OrderOut(
             order_id=report.order_id or None,
             symbol=symbol,
-            status=_STATUS_NAMES[report.status],
-            reject_reason=_reason(report.reject_reason.name),
-            cancel_reason=_reason(report.cancel_reason.name),
+            status=STATUS_NAMES[report.status],
+            reject_reason=reason_name(report.reject_reason.name),
+            cancel_reason=reason_name(report.cancel_reason.name),
             filled_quantity=report.filled_quantity,
             resting_quantity=report.resting_quantity,
             cancelled_quantity=report.cancelled_quantity,
@@ -330,6 +361,9 @@ class LiveSession:
             order_latency_ms=simulation.config.order_latency_ns / 1e6,
             bar_interval_seconds=to_seconds(simulation.config.bar_interval_ns),
             symbols=list(simulation.config.symbols),
+            initial_cash=simulation.config.initial_cash,
+            agents=None if self.population is None else _agents_in(self.population),
+            market=None if self.environment_config is None else _market_in(self.environment_config),
             error=self.error,
             summary=SimulationSummaryOut(
                 events_processed=summary.events_processed,
@@ -371,7 +405,9 @@ class LiveSession:
                 {
                     "symbol": symbol,
                     "book": self._book(instrument).model_dump(),
-                    "market": market_out(exchange, instrument, fmt).model_dump(),
+                    "market": market_out(
+                        exchange, instrument, fmt, self.fundamental(instrument)
+                    ).model_dump(),
                     "trades": [
                         trade_out(t, fmt).model_dump()
                         for t in recorder.trades(instrument, SNAPSHOT_TRADES)
@@ -382,7 +418,17 @@ class LiveSession:
                     ],
                 }
             )
-        return {"type": "snapshot", "simulation": self._status(), "markets": markets}
+        return {
+            "type": "snapshot",
+            "simulation": self._status(),
+            "markets": markets,
+            "agents": [agent.model_dump() for agent in self.agents()],
+            "news": [
+                item.model_dump()
+                for item in self.news(SNAPSHOT_NEWS)
+                if symbols is None or item.symbol in symbols
+            ],
+        }
 
     def publish_changes(self) -> None:
         changes = self._simulation.drain_changes()
@@ -393,7 +439,25 @@ class LiveSession:
             self._last_status = status_message
         if self.hub.subscriber_count:  # Payloads are built only if someone will receive them.
             batch.extend(self._updates(changes))
+            leaderboard = self._leaderboard_update()
+            if leaderboard is not None:
+                batch.append((leaderboard, None))
         self.hub.publish(batch)
+
+    def _leaderboard_update(self) -> Message | None:
+        """The ``agents`` message: at most once per LEADERBOARD_SECONDS of wall time, only when
+        something in it changed, and only in markets with agents or an environment."""
+        if not self.has_market:
+            return None
+        now = self.clock()
+        if self._leaderboard_at is not None and now - self._leaderboard_at < LEADERBOARD_SECONDS:
+            return None
+        self._leaderboard_at = now
+        board = [agent.model_dump() for agent in self.agents()]
+        if board == self._last_leaderboard:
+            return None
+        self._last_leaderboard = board
+        return {"type": "agents", "agents": board}
 
     def _updates(self, changes: ChangeSet) -> list[tuple[Message, str]]:
         symbols = self._simulation.config.symbols
@@ -408,13 +472,15 @@ class LiveSession:
         for bar in changes.bars:
             bars_by_instrument.setdefault(bar.instrument, []).append(bar)
         updates: list[tuple[Message, str]] = []
+        for news in changes.news:  # First: the market's reaction follows in the same batch.
+            item = news_out(news, symbols)
+            updates.append(({"type": "news", **item.model_dump()}, item.symbol))
         for instrument in sorted(changes.instruments | trades_by_instrument.keys()):
             symbol = symbols[instrument]
             fmt = self.formats[instrument]
             updates.append(({"type": "book", **self._book(instrument).model_dump()}, symbol))
-            updates.append(
-                ({"type": "market", **market_out(exchange, instrument, fmt).model_dump()}, symbol)
-            )
+            market = market_out(exchange, instrument, fmt, self.fundamental(instrument))
+            updates.append(({"type": "market", **market.model_dump()}, symbol))
             if instrument in trades_by_instrument:
                 trades = trades_by_instrument[instrument]
                 updates.append(({"type": "trades", "symbol": symbol, "trades": trades}, symbol))
@@ -443,8 +509,37 @@ class LiveSession:
         )
 
 
-def _reason(name: str) -> str | None:
-    return None if name == "NONE" else name.lower()
+def _agents_in(population: PopulationConfig) -> AgentsIn:
+    return AgentsIn(
+        random_traders=population.random_traders,
+        market_makers=population.market_makers,
+        momentum_traders=population.momentum_traders,
+        fundamental_traders=population.fundamental_traders,
+        pairs_traders=population.pairs_traders,
+        order_frequency=population.order_frequency,
+    )
+
+
+def _market_in(environment: EnvironmentConfig) -> MarketIn:
+    return MarketIn(
+        volatility=environment.volatility,
+        volatile_multiplier=environment.volatile_multiplier,
+        news_per_hour=environment.news_per_hour,
+        news_impact=environment.news_impact,
+        shocks_per_hour=environment.shocks_per_hour,
+        shock_impact=environment.shock_impact,
+        liquidity_shocks_per_hour=environment.liquidity_shocks_per_hour,
+        liquidity_shock_quantity=environment.liquidity_shock_quantity,
+        pairs=[
+            PairIn(
+                leader=pair.leader,
+                follower=pair.follower,
+                half_life_seconds=pair.half_life_seconds,
+                deviation_volatility=pair.deviation_volatility,
+            )
+            for pair in environment.pairs
+        ],
+    )
 
 
 class SessionManager:
@@ -460,11 +555,25 @@ class SessionManager:
     def settings(self) -> Settings:
         return self._settings
 
-    def create(self, config: SimulationConfig, speed: float) -> LiveSession:
+    def create(
+        self,
+        config: SimulationConfig,
+        speed: float,
+        *,
+        population: PopulationConfig | None = None,
+        environment: EnvironmentConfig | None = None,
+    ) -> LiveSession:
         """Registers a new session and makes it active. Synchronous on purpose: registering it,
         evicting old sessions and the caller's response all see one consistent registry, with
         no other request able to interleave."""
-        session = LiveSession(secrets.token_hex(6), config, speed, self._settings)
+        session = LiveSession(
+            secrets.token_hex(6),
+            config,
+            speed,
+            self._settings,
+            population=population,
+            environment=environment,
+        )
         self._sessions[session.id] = session
         self._active = session.id
         while len(self._sessions) > self._settings.max_sessions:

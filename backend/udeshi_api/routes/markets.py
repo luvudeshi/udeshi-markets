@@ -40,8 +40,8 @@ async def list_markets(sessions: Sessions, simulation_id: SimulationId = None) -
     session = sessions.resolve(simulation_id)
     exchange = session.simulation.exchange
     return [
-        market_out(exchange, instrument, session.formats[instrument])
-        for instrument in range(exchange.instrument_count)
+        market_out(exchange, i, session.formats[i], session.fundamental(i))
+        for i in range(exchange.instrument_count)
     ]
 
 
@@ -51,7 +51,12 @@ async def get_market(
 ) -> MarketDetailOut:
     session = sessions.resolve(simulation_id)
     instrument = session.instrument(symbol)
-    return market_detail_out(session.simulation.exchange, instrument, session.formats[instrument])
+    return market_detail_out(
+        session.simulation.exchange,
+        instrument,
+        session.formats[instrument],
+        session.fundamental(instrument),
+    )
 
 
 @router.get("/{symbol}/orderbook")

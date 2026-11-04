@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from udeshi_api.errors import install_error_handlers
-from udeshi_api.routes import health, markets, simulations, stream
+from udeshi_api.routes import agents, health, markets, simulations, stream
 from udeshi_api.sessions import SessionManager
 from udeshi_api.settings import Settings
 from udeshi_markets import __version__
@@ -40,6 +40,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     install_error_handlers(app)
-    for router in (health.router, simulations.router, markets.router, stream.router):
+    for router in (
+        health.router,
+        simulations.router,
+        markets.router,
+        agents.router,
+        stream.router,
+    ):
         app.include_router(router)
     return app
