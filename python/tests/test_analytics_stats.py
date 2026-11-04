@@ -18,6 +18,7 @@ from udeshi_markets.analytics import (
     sharpe_ratio,
     simple_returns,
     student_t_cdf,
+    student_t_sf,
     t_quantile,
     weighted_mean,
     welch_t_test,
@@ -140,3 +141,14 @@ def test_welch_t_test() -> None:
     assert same[2] == pytest.approx(1.0)
     assert welch_t_test([1.0, 1.0], [2.0, 2.0]) is None  # Zero variance on both sides.
     assert welch_t_test([1.0], [2.0, 3.0]) is None
+
+
+def test_small_tails_keep_their_relative_precision() -> None:
+    """1 - CDF cancels to zero long before the tail does. These references are from SciPy."""
+    assert 2 * student_t_sf(12.0, 58) == pytest.approx(2.3615708e-17, rel=1e-6)
+    result = welch_t_test([1.0, 1.1, 0.9, 1.0, 1.05, 0.95], [5.0, 5.1, 4.9, 5.0, 5.05, 4.95])
+    assert result is not None
+    assert 0.0 < result[2] < 1e-12  # Tiny but not zero.
+    assert student_t_cdf(1e-4, 1e7) == pytest.approx(0.5 + 1e-4 * 0.3989422804, abs=1e-9)
+    assert student_t_sf(0.0, 4) == 0.5
+    assert student_t_sf(-2.0, 5) == pytest.approx(1 - student_t_sf(2.0, 5))

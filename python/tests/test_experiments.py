@@ -21,7 +21,7 @@ from udeshi_markets.experiments import (
     write_runs_csv,
     write_summary_csv,
 )
-from udeshi_markets.simulation import MINUTE, EnvironmentConfig
+from udeshi_markets.simulation import MINUTE, EnvironmentConfig, PairConfig
 
 SMALL = PopulationConfig(
     random_traders=4, market_makers=2, momentum_traders=1, fundamental_traders=2, pairs_traders=1
@@ -142,3 +142,30 @@ def test_csv_exports() -> None:
     [row] = list(csv.DictReader(io.StringIO(comparison.getvalue())))
     assert row["metric"] == "depth"
     assert row["p_value"] != ""
+
+
+def test_the_order_of_settings_cannot_change_the_market() -> None:
+    """Environment settings act on the final market: changing the instruments after the
+    volatility gives the same experiment as the other way round."""
+    from udeshi_markets.simulation import DEFAULT_INSTRUMENTS
+
+    three = DEFAULT_INSTRUMENTS[2:]  # QUANT, ORBIT, VECTOR: no ACME/NOVA pair.
+    base = spec(population=dataclasses.replace(SMALL, pairs_traders=0))
+    one = base.with_value("environment.volatility", 0.05).with_value("instruments", three)
+    other = base.with_value("instruments", three).with_value("environment.volatility", 0.05)
+    assert one.environment_config() == other.environment_config()
+    assert one.environment_config().pairs == ()
+    assert one.environment_config().volatility == 0.05
+    with pytest.raises(ValueError, match="unknown symbol"):
+        spec(instruments=three, environment=EnvironmentConfig(pairs=(PairConfig("ACME", "NOVA"),)))
+
+
+def test_comparison_statistics_share_the_sign_of_the_difference() -> None:
+    few = run_experiment(spec(name="few", runs=3))
+    many = run_experiment(
+        spec(name="many", runs=3, population=dataclasses.replace(SMALL, random_traders=12))
+    )
+    for comparison in compare(few, many, ["volume", "spread_bps", "depth"]):
+        assert comparison.t is not None
+        assert comparison.difference is not None
+        assert (comparison.t > 0) == (comparison.difference > 0)

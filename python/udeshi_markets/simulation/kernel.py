@@ -115,6 +115,10 @@ class SimulationObserver:
     def on_order(self, event: OrderEvent) -> None:
         """Called once for every order the exchange processes."""
 
+    def on_reset(self) -> None:
+        """Called after the simulation was reset (rebuilt): whatever the observer recorded
+        belongs to a run that no longer exists."""
+
 
 @dataclass(frozen=True, slots=True)
 class SimulationSummary:
@@ -385,6 +389,8 @@ class Simulation:
             )
         self._news: deque[News] = deque(maxlen=1_000)
         self._pending_news: list[News] = []
+        for observer in getattr(self, "_observers", ()):
+            observer.on_reset()
 
     def signal_estimate(self, participant_id: int, instrument: int) -> float:
         """A participant's private signal of an instrument's current fundamental value, in
@@ -586,8 +592,12 @@ class Simulation:
         return self._environment
 
     def add_observer(self, observer: SimulationObserver) -> None:
-        """Registers a read-only observer of every processed order (kept across resets)."""
+        """Registers a read-only observer of every processed order. Observers are kept across
+        resets, and told about each one (``on_reset``)."""
         self._observers.append(observer)
+
+    def remove_observer(self, observer: SimulationObserver) -> None:
+        self._observers.remove(observer)
 
     def portfolio(self, participant_id: int) -> PortfolioView:
         """A participant's portfolio, for observers such as the API (read-only)."""
@@ -689,7 +699,8 @@ class Simulation:
             timestamp=self._now,
         )
         bid_before = ask_before = None
-        if self._observers:
+        if self._observers and intent.instrument < self._exchange.instrument_count:
+            # (An unknown instrument has no quote; the exchange rejects the order.)
             bid_before = self._exchange.best_bid(intent.instrument)
             ask_before = self._exchange.best_ask(intent.instrument)
         result = self._exchange.submit(request)

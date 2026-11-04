@@ -88,7 +88,7 @@ class Comparison:
     count_b: int
     mean_b: float | None
     difference: float | None  # mean_b - mean_a.
-    t: float | None  # Welch's t of a against b.
+    t: float | None  # Welch's t of b against a: the same sign as ``difference``.
     df: float | None
     p_value: float | None  # Two-sided.
 
@@ -270,7 +270,7 @@ def compare(
     for name in names:
         values_a, values_b = a.values(name), b.values(name)
         mean_a, mean_b = mean(values_a), mean(values_b)
-        test = welch_t_test(values_a, values_b)
+        test = welch_t_test(values_b, values_a)
         comparisons.append(
             Comparison(
                 metric=name,

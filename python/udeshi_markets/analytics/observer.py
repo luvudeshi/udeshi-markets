@@ -71,6 +71,11 @@ class MarketObserver(SimulationObserver):
         self.interval_ns = interval_ns
         self.markout_ns = markout_ns
         self.depth_levels = depth_levels
+        self._initialize()
+        simulation.add_observer(self)
+
+    def _initialize(self) -> None:
+        simulation = self.simulation
         count = simulation.exchange.instrument_count
         self.times: list[int] = []
         self.series = [InstrumentSeries([], [], [], [], []) for _ in range(count)]
@@ -78,16 +83,20 @@ class MarketObserver(SimulationObserver):
         self.exposure: dict[int, list[float]] = {pid: [] for pid in simulation.participants}
         self.trades: list[TradeRecord] = []
         self.mid_after: dict[int, Fraction | None] = {}  # Trade index -> mid at t + horizon.
-        self.submitted: list[int] = [0] * count  # Shares submitted per instrument.
+        self.submitted: list[int] = [0] * count  # Shares in accepted orders, per instrument.
         self.submitted_by: dict[int, int] = dict.fromkeys(simulation.participants, 0)
         self._pending: deque[tuple[int, int]] = deque()  # (due time, trade index), in order.
-        self._next_sample = 0
+        self._next_sample = simulation.now  # Observation starts now, even mid-run.
         self._ticks = [simulation.exchange.instrument(i).tick_size for i in range(count)]
-        simulation.add_observer(self)
 
     # ---- From the kernel ------------------------------------------------------------------------
+    def on_reset(self) -> None:
+        self._initialize()
+
     def on_order(self, event: OrderEvent) -> None:
         intent = event.intent
+        if not event.result.accepted:
+            return  # A rejected order never reached the book: nothing was submitted to it.
         self.submitted[intent.instrument] += intent.quantity
         self.submitted_by[event.participant_id] = (
             self.submitted_by.get(event.participant_id, 0) + intent.quantity
@@ -179,6 +188,6 @@ def run_observed(simulation: Simulation, observer: MarketObserver) -> None:
         simulation.start()
     end = simulation.config.duration_ns
     while simulation.state in (SimulationState.RUNNING, SimulationState.PAUSED):
-        simulation.run_until(min(observer.next_stop(), end))
+        simulation.run_until(max(simulation.now, min(observer.next_stop(), end)))
         observer.observe()
     observer.finish()

@@ -10,8 +10,10 @@ computed on deviations from the first value, so the rounding error in the mean o
 values cannot masquerade as a tiny variance.
 
 The Student-t distribution is implemented here (regularized incomplete beta function by Lentz's
-continued fraction), so the package needs no SciPy. Its results are accurate to about 1e-12,
-which is more than enough for confidence intervals and p-values.
+continued fraction), so the package needs no SciPy. Tails are computed directly rather than as
+1 - CDF, so tiny p-values keep their relative precision. Measured against SciPy on 576 points
+(t from 1e-12 to 1e4, df from 0.3 to 1e7): absolute CDF error at most 3.2e-10 for df <= 1e5
+(1.6e-9 at df = 1e7), and tail probabilities within 1e-9 relative for df <= 1e5.
 """
 
 from __future__ import annotations
@@ -129,18 +131,20 @@ def max_drawdown(equity: Sequence[float]) -> tuple[float, float | None] | None:
 # ---- Student-t distribution ------------------------------------------------------------------
 
 
-def _incomplete_beta(x: float, a: float, b: float) -> float:
+def _incomplete_beta(x: float, a: float, b: float, complement: float) -> float:
     """Regularized incomplete beta I_x(a, b), by the continued fraction of Numerical Recipes
-    (modified Lentz), using the symmetry I_x(a, b) = 1 - I_{1-x}(b, a) for convergence."""
+    (modified Lentz). ``complement`` is 1 - x, passed in because the caller can compute it
+    without the cancellation of subtracting from 1. The symmetry I_x(a, b) = 1 - I_{1-x}(b, a)
+    keeps the continued fraction in the range where it converges quickly."""
     if x <= 0.0:
         return 0.0
-    if x >= 1.0:
+    if complement <= 0.0:
         return 1.0
-    log_front = (
-        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x)
-    )
     if x > (a + 1.0) / (a + b + 2.0):
-        return 1.0 - _incomplete_beta(1.0 - x, b, a)
+        return 1.0 - _incomplete_beta(complement, b, a, x)
+    log_front = (
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x)
+    ) + b * math.log(complement)
     tiny = 1e-300
     c, d = 1.0, 1.0 - (a + b) * x / (a + 1.0)
     d = 1.0 / (d if abs(d) > tiny else tiny)
@@ -160,14 +164,22 @@ def _incomplete_beta(x: float, a: float, b: float) -> float:
     return math.exp(log_front) * fraction / a
 
 
-def student_t_cdf(t: float, df: float) -> float:
-    """P(T <= t) for Student's t with ``df`` degrees of freedom."""
+def student_t_sf(t: float, df: float) -> float:
+    """P(T > t), the upper tail, computed directly (so small tails keep full relative
+    precision instead of cancelling in 1 - CDF)."""
     if not df > 0:
         raise ValueError("degrees of freedom must be positive")
     if math.isinf(t):
-        return 1.0 if t > 0 else 0.0
-    tail = 0.5 * _incomplete_beta(df / (df + t * t), df / 2.0, 0.5)
-    return 1.0 - tail if t > 0 else tail
+        return 0.0 if t > 0 else 1.0
+    t2 = t * t
+    # P(|T| > |t|) = I_x(df/2, 1/2) with x = df / (df + t^2); 1 - x is t^2 / (df + t^2).
+    tail = 0.5 * _incomplete_beta(df / (df + t2), df / 2.0, 0.5, t2 / (df + t2))
+    return tail if t > 0 else 1.0 - tail
+
+
+def student_t_cdf(t: float, df: float) -> float:
+    """P(T <= t) for Student's t with ``df`` degrees of freedom."""
+    return student_t_sf(-t, df)
 
 
 def t_quantile(p: float, df: float) -> float:
@@ -219,5 +231,5 @@ def welch_t_test(a: Sequence[float], b: Sequence[float]) -> tuple[float, float, 
         return None
     t = (mean_a - mean_b) / math.sqrt(se)
     df = se * se / (se_a * se_a / (len(a) - 1) + se_b * se_b / (len(b) - 1))
-    p = 2.0 * (1.0 - student_t_cdf(abs(t), df))
+    p = min(1.0, 2.0 * student_t_sf(abs(t), df))
     return t, df, p

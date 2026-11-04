@@ -12,6 +12,7 @@ from udeshi_markets.simulation import (
     SECOND,
     InstrumentConfig,
     OrderIntent,
+    Participant,
     ScriptedCancel,
     ScriptedOrder,
     ScriptedParticipant,
@@ -25,22 +26,26 @@ ONE = (InstrumentConfig("AAA", 100.0, tick_size=1.0),)  # One tick = 1 currency 
 def scripted_market() -> tuple[Simulation, MarketObserver]:
     """A maker quotes 99 / 101 (mid 100). At 1 s a taker buys 4 at 101. At 2 s the maker
     requotes 101 / 103 (mid 102), which is still the quote at the 5 s markout horizon."""
-    maker = ScriptedParticipant(
-        1,
-        [
-            ScriptedOrder(0, OrderIntent(0, Side.BUY, 10, price=99)),
-            ScriptedOrder(0, OrderIntent(0, Side.SELL, 10, price=101)),
-            ScriptedCancel(2 * SECOND, 0),
-            ScriptedCancel(2 * SECOND, 1),
-            ScriptedOrder(2 * SECOND, OrderIntent(0, Side.BUY, 10, price=101)),
-            ScriptedOrder(2 * SECOND, OrderIntent(0, Side.SELL, 10, price=103)),
-        ],
-    )
-    taker = ScriptedParticipant(
-        2, [ScriptedOrder(SECOND, OrderIntent(0, Side.BUY, 4, order_type=OrderType.MARKET))]
-    )
+
+    def participants() -> list[Participant]:  # Fresh participants for every run.
+        maker = ScriptedParticipant(
+            1,
+            [
+                ScriptedOrder(0, OrderIntent(0, Side.BUY, 10, price=99)),
+                ScriptedOrder(0, OrderIntent(0, Side.SELL, 10, price=101)),
+                ScriptedCancel(2 * SECOND, 0),
+                ScriptedCancel(2 * SECOND, 1),
+                ScriptedOrder(2 * SECOND, OrderIntent(0, Side.BUY, 10, price=101)),
+                ScriptedOrder(2 * SECOND, OrderIntent(0, Side.SELL, 10, price=103)),
+            ],
+        )
+        taker = ScriptedParticipant(
+            2, [ScriptedOrder(SECOND, OrderIntent(0, Side.BUY, 4, order_type=OrderType.MARKET))]
+        )
+        return [maker, taker]
+
     config = SimulationConfig(instruments=ONE, duration_ns=10 * SECOND, initial_cash=1000.0)
-    sim = Simulation(config, lambda: [maker, taker])
+    sim = Simulation(config, participants)
     observer = MarketObserver(sim, interval_ns=SECOND, markout_ns=5 * SECOND)
     run_observed(sim, observer)
     return sim, observer
@@ -142,3 +147,49 @@ def test_observer_parameters_are_validated() -> None:
     sim = Simulation(SimulationConfig(instruments=ONE))
     with pytest.raises(ValueError, match="must be positive"):
         MarketObserver(sim, interval_ns=0)
+
+
+def test_orders_for_unknown_instruments_or_bad_sizes_do_not_disturb_observation() -> None:
+    """Rejected orders never reach the book: they are not submitted volume, and an order for
+    an instrument that does not exist is rejected as usual rather than failing the run."""
+    stray = ScriptedParticipant(
+        3,
+        [
+            ScriptedOrder(SECOND, OrderIntent(5, Side.BUY, 4, price=100)),  # No instrument 5.
+            ScriptedOrder(SECOND, OrderIntent(0, Side.BUY, -1000, price=100)),  # Bad size.
+        ],
+    )
+    maker = ScriptedParticipant(1, [ScriptedOrder(0, OrderIntent(0, Side.SELL, 10, price=101))])
+    taker = ScriptedParticipant(
+        2, [ScriptedOrder(2 * SECOND, OrderIntent(0, Side.BUY, 4, order_type=OrderType.MARKET))]
+    )
+    config = SimulationConfig(instruments=ONE, duration_ns=10 * SECOND)
+    sim = Simulation(config, lambda: [maker, taker, stray])
+    observer = MarketObserver(sim)
+    run_observed(sim, observer)
+    assert sim.state.name == "COMPLETED"
+    assert sim.summary().orders_rejected == 2
+    assert observer.submitted == [14]
+    [micro] = analyze(observer).microstructure
+    assert micro.fill_rate == pytest.approx(2 * 4 / 14)
+    agents = {a.participant_id: a for a in analyze(observer).agents}
+    assert agents[3].fill_rate is None  # It submitted nothing that reached the book.
+
+
+def test_an_observer_follows_a_reset() -> None:
+    sim, observer = scripted_market()
+    first = (len(observer.times), len(observer.trades), list(observer.submitted))
+    sim.reset()
+    run_observed(sim, observer)
+    assert (len(observer.times), len(observer.trades), observer.submitted) == first
+    assert len(observer.trades) == sim.exchange.statistics(0).trade_count
+
+
+def test_an_observer_can_start_mid_run() -> None:
+    sim = market_simulation(SimulationConfig(duration_ns=MINUTE, seed=2))
+    sim.start()
+    sim.run_until(20 * SECOND)
+    observer = MarketObserver(sim)
+    run_observed(sim, observer)
+    assert observer.times[0] == 20 * SECOND
+    assert observer.times[-1] == MINUTE

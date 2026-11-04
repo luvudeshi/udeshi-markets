@@ -41,6 +41,10 @@ class ExperimentSpec:
     sample_interval_ns: int = SECOND
     markout_ns: int = 5 * SECOND
     parameters: tuple[tuple[str, object], ...] = ()
+    # Environment settings changed by path. They are applied to the environment only when it is
+    # needed, so they act on the final market (whatever instruments it ends up with) and the
+    # order in which settings are changed cannot matter.
+    environment_overrides: tuple[tuple[str, object], ...] = ()
 
     def __post_init__(self) -> None:
         if not 1 <= self.runs <= MAX_RUNS:
@@ -50,7 +54,12 @@ class ExperimentSpec:
         if self.sample_interval_ns <= 0 or self.markout_ns <= 0:
             raise ValueError("sample_interval_ns and markout_ns must be positive")
         self.simulation_config(self.base_seed)  # Validates the market itself.
-        if self.population.pairs_traders and not self.environment_config().pairs:
+        environment = self.environment_config()
+        symbols = {instrument.symbol for instrument in self.instruments}
+        for pair in environment.pairs:
+            if not {pair.leader, pair.follower} <= symbols:
+                raise ValueError(f"pair {pair.leader}/{pair.follower} names an unknown symbol")
+        if self.population.pairs_traders and not environment.pairs:
             raise ValueError("pairs traders need a pair in the environment")
 
     def seeds(self) -> list[int]:
@@ -66,9 +75,12 @@ class ExperimentSpec:
         )
 
     def environment_config(self) -> EnvironmentConfig:
-        if self.environment is not None:
-            return self.environment
-        return default_environment(self.simulation_config(self.base_seed))
+        environment = self.environment
+        if environment is None:
+            environment = default_environment(self.simulation_config(self.base_seed))
+        for name, value in self.environment_overrides:
+            environment = _replace(environment, name, value)
+        return environment
 
     def with_value(self, path: str, value: object) -> ExperimentSpec:
         """A copy with one setting changed: a field of the spec ("duration_ns"), of the
@@ -80,9 +92,12 @@ class ExperimentSpec:
             population = _replace(self.population, rest, value)
             return dataclasses.replace(self, population=population, parameters=parameters)
         if head == "environment" and rest:
-            environment = _replace(self.environment_config(), rest, value)
-            return dataclasses.replace(self, environment=environment, parameters=parameters)
-        if head in {"name", "parameters", "population", "environment"} or rest:
+            _replace(self.environment_config(), rest, value)  # Checks the name and value now.
+            overrides = (*self.environment_overrides, (rest, value))
+            return dataclasses.replace(self, environment_overrides=overrides, parameters=parameters)
+        if head in {"name", "parameters", "population", "environment", "environment_overrides"}:
+            raise ValueError(f"cannot sweep {path!r}")
+        if rest:
             raise ValueError(f"cannot sweep {path!r}")
         return dataclasses.replace(self, **{head: value}, parameters=parameters)  # type: ignore[arg-type]
 
