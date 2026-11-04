@@ -112,7 +112,8 @@ uv sync --all-packages              # builds the C++ extension, installs both pa
 uv run python -m udeshi_api         # API on http://127.0.0.1:8000 (docs at /docs)
 ```
 
-Or run it in a container: `docker compose up --build`.
+Or run it in containers, the API with PostgreSQL for experiment results: `docker compose up --build`.
+Without `UDESHI_DATABASE_URL`, the API keeps experiments in an in-memory SQLite database.
 
 ```bash
 B=http://127.0.0.1:8000
@@ -248,5 +249,5 @@ docs/            design documentation
 ## Technology
 
 C++20 · CMake · GoogleTest · Python 3.12 · pybind11 · scikit-build-core · uv · FastAPI ·
-Pydantic · pytest · Hypothesis · mypy · Ruff · Docker. Planned for later phases: PostgreSQL ·
-Next.js · TypeScript · Tailwind · Playwright.
+Pydantic · SQLAlchemy · PostgreSQL · pytest · Hypothesis · mypy · Ruff · Docker. Planned for later
+phases: Next.js · TypeScript · Tailwind · Playwright.

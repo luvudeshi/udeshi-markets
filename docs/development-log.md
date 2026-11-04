@@ -10,7 +10,7 @@ What has been built, the decisions behind it, and what is next. The requirements
 | 1 | C++ matching engine, price-time priority, cancellation, tests | **Done.** CI green; 61/61 mutants killed on Linux and macOS. |
 | 2 | pybind11 bindings, exchange API, discrete-event loop, integration tests | **Done.** 68 review findings, all reproduced and fixed with tests. |
 | 3 | Trading agents, market dynamics, portfolio accounting | **Done.** Five strategies, a market environment, exact accounting, agents in the API. |
-| 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Not started |
+| 4 | Analytics, experiments, Monte Carlo, PostgreSQL | **Done.** Documented metrics, an experiment framework, persistent experiments in the API. |
 | 5 | Next.js frontend, WebSocket integration, visualisations | Not started |
 | 6 | Benchmarks, profiling, optimisation, documentation | Not started |
 
@@ -249,6 +249,83 @@ including:
 * The market maker's fair value comes from trades only.
 * Indicators are sampled at Poisson times.
 * There are no fees or borrowing costs, and one market-wide regime.
+
+## Phase 4: analytics, experiments, Monte Carlo, PostgreSQL
+
+**Delivered:**
+* **Kernel hook.** A read-only `SimulationObserver` sees every processed order with the best bid
+  and ask just before it reached the exchange: the prevailing quote that trades are measured
+  against. Observers are told about resets.
+* **Analytics** (`analytics/`):
+  * a `MarketObserver` that samples books, fundamentals, equity and exposure, records every trade
+    with its pre-trade midprice, and reads each trade's midprice exactly at its markout horizon;
+  * market metrics: volatility, spread, depth, imbalance, and pricing error against fundamentals;
+  * microstructure metrics: effective and realized spread, price impact, fill rate, trade size;
+  * agent metrics: P&L, return, Sharpe ratio, drawdown, exposure, win rate, fill rate, VWAP;
+  * statistics with exact zero-variance handling, and an in-package Student-t distribution
+    (confidence intervals, Welch's test).
+* **Experiments** (`experiments/`):
+  * specs whose run k uses seed `base_seed + k`;
+  * runs as pure functions of (spec, seed), executed in spawned worker processes, with results in
+    seed order;
+  * Monte Carlo, parameter sweeps over spec, population and environment settings, per-metric
+    summaries with t intervals, Welch comparisons, and CSV export.
+* **Persistence and API:**
+  * experiments and their runs stored with SQLAlchemy Core: PostgreSQL in Compose and in a CI
+    job, in-memory SQLite by default;
+  * background execution on a process pool, never blocking the event loop;
+  * `/api/experiments` (create, list, detail with per-point summaries, runs, CSV exports,
+    comparison, cancel, delete);
+  * live `/api/simulations/{id}/analytics`, and Sharpe ratios on the leaderboard.
+
+Documentation is in [quantitative-metrics.md](quantitative-metrics.md) and
+[market-microstructure.md](market-microstructure.md).
+
+**Key decisions:**
+* **Analytics observe, never participate.** The observer is not a participant: it sees
+  everything, acts on nothing, and observing a run leaves its digest unchanged (tested).
+* **Exact horizons.** `run_observed` stops the clock at every sampling time and markout
+  horizon, so a markout is read at exactly t + τ. Live sessions read it at the first tick after.
+* **Undefined is None.** A Sharpe ratio of a flat equity curve or a spread without trades is
+  undefined, and aggregates count only the runs where a metric exists.
+* **Deterministic parallelism.** A run depends only on its spec and seed, so a parallel
+  experiment equals a sequential one exactly (tested).
+* **No new heavy dependencies.** Statistics are self-contained (no SciPy), and storage is
+  SQLAlchemy Core without an ORM or migration framework.
+
+**Measured** (seed 1, default 30-minute market):
+* Price impact is almost the whole effective spread (about 13 bps of about 13 bps), so liquidity
+  providers keep close to nothing: the adverse-selection result of Glosten–Milgrom.
+* Market makers lose (Sharpe −4.8 per hour), and informed fundamental traders win (+5.5 per
+  hour).
+* The brief's two example experiments differ significantly in spread (9.1 against 6.7 bps,
+  p = 0.0005) and depth (71 against 132 shares, p = 0.0003).
+
+**Found by the review and fixed** (7 bugs, reproduced first, each with a regression test):
+* With an observer attached, an order for an unknown instrument failed the run.
+* Rejected orders counted as submitted shares, so fill rates could go negative.
+* A sweep's key order could change which instruments are paired.
+* Observers reused after a reset double-counted and stopped sampling.
+* An observer created mid-run crashed.
+* Comparisons reported t with the opposite sign of the difference.
+* The t distribution lost precision near zero, and tiny p-values came out as 0. It is now
+  checked against SciPy on 576 points: CDF within 3.2e-10, tails within 1e-9 relative.
+
+Integration also removed an observer leak: each live reset left one more observer registered.
+
+**Verification:**
+* 416 tests, including metrics worked out by hand on a scripted market (effective 200 bps =
+  realized −200 + impact 400), statistics against published tables and SciPy, and experiment
+  determinism under parallelism.
+* The storage tests also run against real PostgreSQL in CI.
+* The live API was exercised end to end: a sweep, CSV exports, a comparison, analytics and the
+  leaderboard.
+
+**Limitations:**
+* Only scalar metrics are stored per run, not full time series.
+* The markout horizon is a single parameter.
+* Live analytics read horizons at tick granularity.
+* p-values from a handful of runs assume roughly normal sample means.
 
 ## Working conventions
 
