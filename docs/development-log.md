@@ -203,7 +203,39 @@ Documentation is in [trading-agents.md](trading-agents.md).
 **Found while building it:** a market maker's quote computed as 10004.9999… in floating point
 was floored a whole tick low. Tick rounding now has a 1e-6 tolerance.
 
-**Verification:**
+**Found by two focused reviews and fixed** (13 bugs, every one reproduced with a script first,
+each now with a regression test):
+* **Position limits broke under order latency.** Orders still on their way did not count, so a
+  market maker reached 214 shares against a 200 limit at 100 ms. Agents now track in-flight
+  orders and cancels, and market makers wait for earlier quotes to land. The limits are checked
+  after every event at 10, 100 and 500 ms.
+* **Signal integrity.**
+  * The fundamental signal's noise came from the participant's own stream, so copying it
+    recovered the exact value.
+  * Repeated calls at one instant could be averaged.
+  * An ungranted participant could grant itself a signal.
+
+  The noise now comes from a kernel-held stream, is drawn once per instant, and the grant is
+  fixed when the run is built.
+* **Self-trades.** They realized P&L, and 8% of trades were random traders wash-trading with
+  themselves. A self-trade now moves nothing, and agents use self-trade prevention.
+* **Pairs trader.**
+  * A zero-variance window still produced a signal: rounding in the mean left a variance of
+    about 1e-32, turning a one-tick move into |z| ≈ 10¹².
+  * Legs lost their equal value when one leg was capped.
+* **Robustness.**
+  * Valid-looking configurations crashed runs: infinite durations, tiny rates overflowing the
+    clock, float quantities.
+  * A failed reset left the previous run half-replaced.
+  * Reused environments carried their regime across runs.
+  * News was checked only at dispatch.
+* **Measurement and defaults.**
+  * Markouts were taken at the next action rather than at the 5 s horizon.
+  * Zero-impact news read as bad news.
+  * `market_simulation()` failed with its own defaults.
+
+**Verification:** 351 Python tests (mypy `--strict` and ruff clean; CI on Linux and macOS),
+including:
 * Portfolio worked examples, and a Hypothesis property: conservation, realized + unrealized =
   equity change, zero-sum.
 * Environment behaviour, including exact news impacts and the stationary pair deviation.
