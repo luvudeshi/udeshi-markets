@@ -41,6 +41,13 @@ def nanoseconds(value: float) -> str:
     return f"{value:,.0f}"
 
 
+def clock_text(clock: Result) -> str:
+    return (
+        f"`std::chrono::steady_clock`: ticks of {clock['tick_ns']:.2f} ns; two consecutive "
+        f"reads at least {clock['min_read_gap_ns']} ns apart (median {clock['read_gap_p50_ns']} ns)"
+    )
+
+
 def environment(results: Result) -> str:
     env = results["environment"]
     clock = results["clock"]
@@ -53,11 +60,7 @@ def environment(results: Result) -> str:
         ("Compiler", env["compiler"]),
         ("Build", env["build"]),
         ("Scheduling", env["scheduling"]),
-        (
-            "Clock",
-            f"`std::chrono::steady_clock`: resolution {clock['resolution_ns']} ns, two "
-            f"consecutive reads {clock['read_overhead_p50_ns']} ns apart (median)",
-        ),
+        ("Clock", clock_text(clock)),
         ("Repetitions", f"{config['repetitions']} timed replays per workload, after a warm-up"),
         (
             "Object sizes",
@@ -162,7 +165,7 @@ def summary(results: Result, source: str) -> str:
     clock = results["clock"]
     lines = [
         f"{env['cpu']} ({env['logical_cpus']} logical CPUs), {env['os']}, {env['compiler']}, "
-        f"{env['build']}. Clock resolution {clock['resolution_ns']} ns. Source: {source}.",
+        f"{env['build']}. Clock: {clock_text(clock)}. Source: {source}.",
         "",
         f"| Workload | M ops/s (min{DASH}max) | Mean ns | p50 | p99 | p99.9 | Max |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -184,6 +187,46 @@ def allocations_per_op(workload: Result) -> float:
     operations = sum(kind["latency"]["count"] for kind in kinds)
     allocations = sum(kind["allocations_per_op"] * kind["latency"]["count"] for kind in kinds)
     return allocations / operations
+
+
+README_ROWS = (
+    (
+        "patterns/mixed",
+        None,
+        "Mixed flow: adds, cancels, IOC and market orders, about 10k resting orders",
+    ),
+    ("exchange/mixed", None, "Same flow through the `Exchange` (plus market data)"),
+    ("book_size/100k", None, "Add and cancel on a 100k-order book"),
+    ("cancel/random/1M", None, "Random cancels on a 1M-order book"),
+    ("patterns/sweep_10", "sweep", "A market order sweeping 10 levels (100 fills), timed alone"),
+)
+
+
+def readme(results: Result) -> str:
+    """The README's summary: stream throughput and mean, and percentiles timed alone."""
+    by_name = {w["name"]: w for w in results["workloads"]}
+    lines = [
+        "| Engine workload | Throughput | Mean | p99 | p99.9 |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for name, kind, label in README_ROWS:
+        workload = by_name[name]
+        if kind is None:
+            rate = workload["ops_per_second"]["median"]
+            latency = workload["latency"]
+            throughput, mean = f"{millions(rate)} M ops/s", f"{1e9 / rate:,.0f} ns"
+        else:
+            latency = workload["by_kind"][kind]["latency"]
+            throughput, mean = "—", duration(latency["mean_ns"])
+        lines.append(
+            f"| {label} | {throughput} | {mean} | {duration(latency['p99_ns'])} "
+            f"| {duration(latency['p999_ns'])} |"
+        )
+    return "\n".join(lines)
+
+
+def duration(nanoseconds: float) -> str:
+    return f"{nanoseconds / 1000:.1f} µs" if nanoseconds >= 1000 else f"{nanoseconds:,.0f} ns"
 
 
 def replace_section(text: str, name: str, body: str) -> str:
@@ -220,9 +263,14 @@ def main() -> int:
         for name, body in sections.items():
             print(f"## {name}\n\n{body}\n")
         return 0
+    sections["readme"] = readme(results)
     text = args.update.read_text()
-    for name, body in sections.items():
-        text = replace_section(text, name, body)
+    # Only the sections the file has markers for: the benchmark page has most, the README one.
+    present = [name for name in sections if f"<!-- bench:{name}:start -->" in text]
+    if not present:
+        raise SystemExit(f"no bench markers in {args.update}")
+    for name in present:
+        text = replace_section(text, name, sections[name])
     args.update.write_text(text)
     return 0
 

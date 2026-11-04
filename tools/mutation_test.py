@@ -152,6 +152,7 @@ MUTANTS = [
     m("book insert accepts invalid side", (OB,
       "if (!is_valid(order.side) || order.price <= 0 || order.price > kMaxPrice) {", "if (false) {")),
     m("book insert accepts other instrument", (OB, "if (order.instrument != instrument_) {", "if (false) {")),
+    m("book insert accepts id 0", (OB, "  if (order.id == kInvalidOrderId) {", "  if (false) {")),
     m("book insert skips the duplicate id check", (OB,
       "  if (index_.find(order.id) != nullptr) {", "  if (false) {")),
     m("book insert leaves the order out of the index", (OB, "  index_.insert(order.id, node);\n", "")),

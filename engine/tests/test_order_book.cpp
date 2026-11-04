@@ -170,8 +170,10 @@ TEST_F(OrderBookTest, InsertRejectsMalformedOrdersWithoutSideEffects) {
   Order wrong_instrument = make_order(5, Side::Buy, 100, 5, 5);
   wrong_instrument.instrument = 1;
   Order too_large = make_order(6, Side::Buy, 100, kMaxOrderQuantity + 1, 6);
+  // Id 0 is never assigned, and the id index uses it to mark an empty slot.
+  Order zero_id = make_order(kInvalidOrderId, Side::Buy, 100, 5, 7);
   for (const Order& order :
-       {bad_side, zero_price, huge_price, overfilled, wrong_instrument, too_large}) {
+       {bad_side, zero_price, huge_price, overfilled, wrong_instrument, too_large, zero_id}) {
     EXPECT_THROW(book_.insert(order), std::invalid_argument) << order.id;
   }
   EXPECT_TRUE(book_.empty());

@@ -31,11 +31,13 @@ struct LatencyStats {
 // Sorts `samples` in place.
 [[nodiscard]] LatencyStats summarize(std::vector<std::int64_t>& samples);
 
-// What the clock itself contributes to a per-operation latency: the smallest step it can show,
-// and the median time between two consecutive readings (the floor of any measurement).
+// What the clock contributes to a per-operation latency. `tick_ns` is the step of the
+// underlying counter (the timebase on macOS, clock_getres on Linux): every interval is a
+// multiple of it. The gaps between two consecutive readings show the cost of reading it.
 struct ClockInfo {
-  std::int64_t resolution_ns = 0;
-  std::int64_t read_overhead_p50_ns = 0;
+  double tick_ns = 0;
+  std::int64_t min_read_gap_ns = 0;  // Smallest non-zero gap between consecutive readings.
+  std::int64_t read_gap_p50_ns = 0;  // Median gap: the floor of any measurement.
 };
 [[nodiscard]] ClockInfo measure_clock();
 

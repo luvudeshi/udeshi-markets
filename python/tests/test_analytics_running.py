@@ -312,3 +312,21 @@ def test_a_live_observer_reports_the_same_mid_run_as_the_batch() -> None:
                 micro.effective_spread_bps,
                 expected_micro["effective_spread_bps"],
             )
+
+
+def test_running_mean_refuses_to_mix_ints_and_floats() -> None:
+    """A mix would be averaged differently from ``stats.mean``: refused, not silently wrong.
+    Each case mixes only at its last value."""
+    mixed: tuple[Sequence[float], ...] = ([1, 2, 2.5], [0.5, 1.5, 2], [100, 101, 99.5], [True, 2.5])
+    for values in mixed:
+        running = RunningMean()
+        for value in values[:-1]:
+            running.add(value)
+        with pytest.raises(TypeError, match="all ints or all floats"):
+            running.add(values[-1])
+    pure: tuple[Sequence[float], ...] = ([1, 2, 4], [0.5, 1.5, 2.25], [7])
+    for values in pure:
+        running = RunningMean()
+        for value in values:
+            running.add(value)
+        assert running.value == mean(values)

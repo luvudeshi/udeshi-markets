@@ -93,6 +93,11 @@ Order& OrderBook::insert(Order order) {
   if (!is_valid(order.side) || order.price <= 0 || order.price > kMaxPrice) {
     throw std::invalid_argument("OrderBook::insert: invalid side or price");
   }
+  // Id 0 (kInvalidOrderId) is never assigned by the engine, and the id index uses it to mark
+  // an empty slot.
+  if (order.id == kInvalidOrderId) {
+    throw std::invalid_argument("OrderBook::insert: order id 0 is not a valid id");
+  }
   if (index_.find(order.id) != nullptr) {
     throw std::invalid_argument("OrderBook::insert: duplicate order id " +
                                 std::to_string(order.id));

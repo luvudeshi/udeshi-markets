@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "checksum.hpp"
 #include "rng.hpp"
 
 namespace udeshi::bench {
@@ -50,6 +51,7 @@ class Planner {
 
   // The operations recorded so far build the starting book; later ones are measured.
   void end_setup() {
+    measuring_ = true;
     setup_end_ = ops_.size();
     start_orders_ = book().order_count();
     start_levels_ = std::max(book().level_count(Side::Buy), book().level_count(Side::Sell));
@@ -69,6 +71,10 @@ class Planner {
     op.request = request;
     ops_.push_back(op);
     SubmitResult result = engine_.submit(request);
+    full_.add_full(result);
+    if (measuring_) {
+      light_.add_light(result);
+    }
     const Side resting_side = opposite(request.side);
     for (const Trade& trade : result.trades) {
       const OrderId resting = resting_side == Side::Buy ? trade.buy_order_id : trade.sell_order_id;
@@ -89,6 +95,10 @@ class Planner {
     op.cancel_id = id;
     ops_.push_back(op);
     const CancelResult result = engine_.cancel(kInstrument, id);
+    full_.add_full(result);
+    if (measuring_) {
+      light_.add_light(result);
+    }
     const bool expected = kind == OpKind::CancelMissing ? !result.cancelled() : result.cancelled();
     if (!expected) {
       throw std::logic_error("workload bug: a cancel did not have the intended outcome");
@@ -143,6 +153,11 @@ class Planner {
     workload.final_order_count = book().order_count();
     workload.start_order_count = start_orders_;
     workload.start_levels_per_side = start_levels_;
+    Checksum final_book;
+    final_book.add_book(book());
+    workload.full_checksum = full_.value();
+    workload.light_checksum = light_.value();
+    workload.book_checksum = final_book.value();
     return workload;
   }
 
@@ -170,6 +185,9 @@ class Planner {
   SplitMix64 rng_;
   std::vector<Op> ops_;
   std::size_t setup_end_ = 0;
+  bool measuring_ = false;
+  Checksum full_;
+  Checksum light_;
   std::size_t start_orders_ = 0;
   std::size_t start_levels_ = 0;
   std::vector<OrderId> live_;

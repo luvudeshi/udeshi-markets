@@ -9,8 +9,11 @@
 #include <numeric>
 #include <thread>
 
+#include <ctime>
+
 #if defined(__APPLE__)
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <pthread.h>
 #include <sys/sysctl.h>
 #endif
@@ -71,19 +74,33 @@ ClockInfo measure_clock() {
   constexpr int kReadings = 200'000;
   std::vector<std::int64_t> gaps;
   gaps.reserve(kReadings);
-  std::int64_t resolution = 0;
+  std::int64_t smallest = 0;
   for (int i = 0; i < kReadings; ++i) {
     const auto first = Clock::now();
     const auto second = Clock::now();
     const std::int64_t gap = nanoseconds_between(first, second);
     gaps.push_back(gap);
-    if (gap > 0 && (resolution == 0 || gap < resolution)) {
-      resolution = gap;
+    if (gap > 0 && (smallest == 0 || gap < smallest)) {
+      smallest = gap;
     }
   }
   ClockInfo info;
-  info.resolution_ns = resolution;
-  info.read_overhead_p50_ns = summarize(gaps).p50_ns;
+  info.min_read_gap_ns = smallest;
+  info.read_gap_p50_ns = summarize(gaps).p50_ns;
+#if defined(__APPLE__)
+  // libc++'s steady_clock reads the Mach absolute-time counter, converted with the timebase.
+  mach_timebase_info_data_t timebase{};
+  if (mach_timebase_info(&timebase) == KERN_SUCCESS && timebase.denom != 0) {
+    info.tick_ns = static_cast<double>(timebase.numer) / static_cast<double>(timebase.denom);
+  }
+#else
+  // libstdc++'s steady_clock is CLOCK_MONOTONIC.
+  timespec resolution{};
+  if (clock_getres(CLOCK_MONOTONIC, &resolution) == 0) {
+    info.tick_ns = static_cast<double>(resolution.tv_sec) * 1e9 +
+                   static_cast<double>(resolution.tv_nsec);
+  }
+#endif
   return info;
 }
 

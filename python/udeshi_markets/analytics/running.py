@@ -57,7 +57,11 @@ class FloatSum:
 
 class RunningMean:
     """``stats.mean`` of the values added so far, bit for bit: the mean of the deviations from
-    the first value (summed exactly for ints, as ``sum()`` adds floats otherwise), plus it."""
+    the first value (summed exactly for ints, as ``sum()`` adds floats otherwise), plus it.
+
+    The values must be all ints or all floats. ``sum()`` switches from exact integer to float
+    arithmetic at the first float, which a running total cannot reproduce, so mixing them
+    raises TypeError instead of giving a different mean."""
 
     __slots__ = ("_float_deviations", "_int_deviations", "_origin", "count")
 
@@ -70,6 +74,8 @@ class RunningMean:
     def add(self, value: float) -> None:
         if self.count == 0:
             self._origin = value
+        elif isinstance(value, int) != isinstance(self._origin, int):
+            raise TypeError("RunningMean takes all ints or all floats, not a mix")
         deviation = value - self._origin
         if isinstance(deviation, int):
             self._int_deviations += deviation

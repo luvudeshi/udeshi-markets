@@ -1,11 +1,14 @@
 // Benchmarks of the matching engine. See docs/benchmarking.md for the method.
 //
 //   udeshi_bench [--quick] [--repetitions N] [--filter TEXT] [--json PATH] [--list]
+//   udeshi_bench --self-check
 //
 // Each workload is recorded once against a real engine (workloads.cpp), then replayed on fresh
-// engines: once to warm up, `repetitions` times untimed per operation for throughput, once with
-// every operation timed for the latency distribution, and once counting heap allocations.
-// Every replay must end in the state the recording ended in, or the run fails.
+// engines: once checked field by field against the recording (also the warm-up),
+// `repetitions` times untimed per operation for throughput, once with every operation timed
+// for the latency distribution, and once counting heap allocations. Every replay must
+// reproduce the recording (results, final book, sequence), or the run fails. --self-check
+// shows that this verification catches replays that differ.
 
 #include <algorithm>
 #include <array>
@@ -20,6 +23,7 @@
 #include <vector>
 
 #include "allocation_counter.hpp"
+#include "checksum.hpp"
 #include "measure.hpp"
 #include "udeshi/exchange.hpp"
 #include "udeshi/matching_engine.hpp"
@@ -34,10 +38,13 @@ struct Options {
   std::string filter;
   std::string json_path;
   bool list = false;
+  bool self_check = false;
+  std::size_t memory_only = 0;  // Internal: measure one book size and print it.
 };
 
 constexpr const char* kUsage =
-    "usage: udeshi_bench [--quick] [--repetitions N] [--filter TEXT] [--json PATH] [--list]\n";
+    "usage: udeshi_bench [--quick] [--repetitions N] [--filter TEXT] [--json PATH] [--list]\n"
+    "       udeshi_bench --self-check\n";
 
 Options parse_options(int argc, char** argv) {
   Options options;
@@ -63,6 +70,10 @@ Options parse_options(int argc, char** argv) {
       options.json_path = value();
     } else if (arg == "--list") {
       options.list = true;
+    } else if (arg == "--self-check") {
+      options.self_check = true;
+    } else if (arg == "--memory-only") {
+      options.memory_only = static_cast<std::size_t>(std::stoull(value()));
     } else if (arg == "--help" || arg == "-h") {
       std::fputs(kUsage, stdout);
       std::exit(0);
@@ -73,23 +84,6 @@ Options parse_options(int argc, char** argv) {
   return options;
 }
 
-// Every result feeds a checksum: the compiler cannot discard any of the work, and the
-// replays of one workload must all produce the same value.
-struct Checksum {
-  std::uint64_t value = 0;
-  void mix(std::uint64_t x) noexcept { value = (value ^ x) * 0x100000001B3ULL; }
-  void add(const SubmitResult& result) noexcept {
-    mix(result.sequence);
-    mix(result.order_id);
-    mix(static_cast<std::uint64_t>(result.filled_quantity));
-    mix(result.trades.size());
-  }
-  void add(const CancelResult& result) noexcept {
-    mix(result.sequence);
-    mix(static_cast<std::uint64_t>(result.cancelled_quantity));
-  }
-};
-
 // The two things a workload can be replayed against: the matching engine alone, or the
 // Exchange that the simulation uses (matching plus market-data recording).
 class EngineTarget {
@@ -99,6 +93,7 @@ class EngineTarget {
   CancelResult cancel(OrderId id) noexcept { return engine_.cancel(0, id); }
   [[nodiscard]] Sequence last_sequence() const noexcept { return engine_.last_sequence(); }
   [[nodiscard]] std::size_t order_count() const { return engine_.book(0).order_count(); }
+  [[nodiscard]] const OrderBook& book() const { return engine_.book(0); }
 
  private:
   MatchingEngine engine_;
@@ -113,6 +108,7 @@ class ExchangeTarget {
     return exchange_.engine().last_sequence();
   }
   [[nodiscard]] std::size_t order_count() const { return exchange_.order_book(0).order_count(); }
+  [[nodiscard]] const OrderBook& book() const { return exchange_.order_book(0); }
 
  private:
   Exchange exchange_;
@@ -121,9 +117,18 @@ class ExchangeTarget {
 template <typename Target>
 inline void apply(Target& target, const Op& op, Checksum& checksum) {
   if (op.is_cancel) {
-    checksum.add(target.cancel(op.cancel_id));
+    checksum.add_light(target.cancel(op.cancel_id));
   } else {
-    checksum.add(target.submit(op.request));
+    checksum.add_light(target.submit(op.request));
+  }
+}
+
+template <typename Target>
+void apply_full(Target& target, const Op& op, Checksum& checksum) {
+  if (op.is_cancel) {
+    checksum.add_full(target.cancel(op.cancel_id));
+  } else {
+    checksum.add_full(target.submit(op.request));
   }
 }
 
@@ -137,21 +142,49 @@ std::unique_ptr<Target> prepared(const Workload& workload) {
   return target;
 }
 
+class ReplayMismatch : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
+// The end of a replay: the same last sequence number, resting orders and book (every level)
+// as the recording, and the same results (the light checksum).
 template <typename Target>
-void verify(const Target& target, const Workload& workload) {
+void verify(const Target& target, const Workload& workload, const Checksum& light) {
+  Checksum book;
+  book.add_book(target.book());
   if (target.last_sequence() != workload.final_sequence ||
-      target.order_count() != workload.final_order_count) {
-    throw std::runtime_error("a replay ended in a different state than its recording");
+      target.order_count() != workload.final_order_count ||
+      book.value() != workload.book_checksum || light.value() != workload.light_checksum) {
+    throw ReplayMismatch("a replay differs from its recording");
   }
 }
 
-struct Replay {
-  std::int64_t elapsed_ns = 0;
-  std::uint64_t checksum = 0;
-};
+// An untimed replay that checks every field of every result against the recording.
+template <typename Target>
+void verify_exactly(const Workload& workload) {
+  auto target = std::make_unique<Target>();
+  Checksum full;
+  for (const Op& op : workload.setup) {
+    apply_full(*target, op, full);
+  }
+  for (const Op& op : workload.measured) {
+    apply_full(*target, op, full);
+  }
+  if (full.value() != workload.full_checksum) {
+    throw ReplayMismatch("a replay's results differ from its recording");
+  }
+  Checksum book;
+  book.add_book(target->book());
+  if (target->last_sequence() != workload.final_sequence ||
+      target->order_count() != workload.final_order_count ||
+      book.value() != workload.book_checksum) {
+    throw ReplayMismatch("a replay's final book differs from its recording");
+  }
+}
 
 template <typename Target>
-Replay replay_untimed(const Workload& workload) {
+std::int64_t replay_untimed(const Workload& workload) {
   auto target = prepared<Target>(workload);
   Checksum checksum;
   const auto start = Clock::now();
@@ -159,12 +192,12 @@ Replay replay_untimed(const Workload& workload) {
     apply(*target, op, checksum);
   }
   const auto end = Clock::now();
-  verify(*target, workload);
-  return {nanoseconds_between(start, end), checksum.value};
+  verify(*target, workload, checksum);
+  return nanoseconds_between(start, end);
 }
 
 template <typename Target>
-std::uint64_t replay_timed(const Workload& workload, std::vector<std::int64_t>& samples) {
+void replay_timed(const Workload& workload, std::vector<std::int64_t>& samples) {
   auto target = prepared<Target>(workload);
   samples.assign(workload.measured.size(), 0);
   Checksum checksum;
@@ -174,8 +207,7 @@ std::uint64_t replay_timed(const Workload& workload, std::vector<std::int64_t>& 
     const auto end = Clock::now();
     samples[i] = nanoseconds_between(start, end);
   }
-  verify(*target, workload);
-  return checksum.value;
+  verify(*target, workload, checksum);
 }
 
 struct KindAllocations {
@@ -184,7 +216,7 @@ struct KindAllocations {
 };
 
 template <typename Target>
-KindAllocations replay_counting(const Workload& workload, std::uint64_t& checksum_out) {
+KindAllocations replay_counting(const Workload& workload) {
   auto target = prepared<Target>(workload);
   KindAllocations result;
   Checksum checksum;
@@ -197,8 +229,7 @@ KindAllocations replay_counting(const Workload& workload, std::uint64_t& checksu
     ++result.operations[kind];
   }
   set_allocation_counting(false);
-  verify(*target, workload);
-  checksum_out = checksum.value;
+  verify(*target, workload, checksum);
   return result;
 }
 
@@ -215,6 +246,8 @@ struct WorkloadResult {
   KindAllocations allocations;
 };
 
+// Every replay is checked against the recording: the first (the warm-up) field by field,
+// the others by their light checksum and the final book.
 template <typename Target>
 WorkloadResult measure(const WorkloadSpec& spec, const Workload& workload, int repetitions) {
   WorkloadResult result;
@@ -225,21 +258,14 @@ WorkloadResult measure(const WorkloadSpec& spec, const Workload& workload, int r
   result.start_levels = workload.start_levels_per_side;
   result.end_orders = workload.final_order_count;
 
-  const std::uint64_t expected = replay_untimed<Target>(workload).checksum;  // Warm-up.
-  const auto check = [&](std::uint64_t checksum) {
-    if (checksum != expected) {
-      throw std::runtime_error(spec.name + ": replays of one workload disagree");
-    }
-  };
+  verify_exactly<Target>(workload);  // Also the warm-up.
   for (int i = 0; i < repetitions; ++i) {
-    const Replay replay = replay_untimed<Target>(workload);
-    check(replay.checksum);
-    const double seconds = static_cast<double>(replay.elapsed_ns) / 1e9;
+    const double seconds = static_cast<double>(replay_untimed<Target>(workload)) / 1e9;
     result.ops_per_second.push_back(static_cast<double>(workload.measured.size()) / seconds);
   }
 
   std::vector<std::int64_t> samples;
-  check(replay_timed<Target>(workload, samples));
+  replay_timed<Target>(workload, samples);
   std::array<std::vector<std::int64_t>, kOpKinds> by_kind;
   for (std::size_t i = 0; i < samples.size(); ++i) {
     by_kind[static_cast<std::size_t>(workload.measured[i].kind)].push_back(samples[i]);
@@ -248,10 +274,7 @@ WorkloadResult measure(const WorkloadSpec& spec, const Workload& workload, int r
   for (std::size_t kind = 0; kind < kOpKinds; ++kind) {
     result.latency_by_kind[kind] = summarize(by_kind[kind]);
   }
-
-  std::uint64_t counted = 0;
-  result.allocations = replay_counting<Target>(workload, counted);
-  check(counted);
+  result.allocations = replay_counting<Target>(workload);
   return result;
 }
 
@@ -260,6 +283,62 @@ double median(std::vector<double> values) {
   const std::size_t n = values.size();
   return n % 2 == 1 ? values[n / 2] : (values[n / 2 - 1] + values[n / 2]) / 2.0;
 }
+
+// ---- Self-check ----------------------------------------------------------------------------
+
+// Proves that verification catches a replay that differs from its recording: each workload
+// must verify as recorded, and fail once one of its operations is changed in a way that
+// leaves the number of trades and of resting orders as they were.
+void self_check() {
+  const std::vector<WorkloadSpec> specs = workload_specs(true);
+  const auto expect_mismatch = [](const Workload& changed, const std::string& what) {
+    try {
+      verify_exactly<EngineTarget>(changed);
+    } catch (const ReplayMismatch&) {
+      return;
+    }
+    throw std::runtime_error("self-check: verification missed " + what);
+  };
+  int checked = 0;
+  for (const WorkloadSpec& spec : specs) {
+    if (spec.name != "book_size/1k" && spec.name != "patterns/mixed" &&
+        spec.name != "cancel/requote") {
+      continue;
+    }
+    const Workload workload = spec.build();
+    verify_exactly<EngineTarget>(workload);
+    verify_exactly<ExchangeTarget>(workload);
+
+    const auto first_add = std::find_if(workload.measured.begin(), workload.measured.end(),
+                                        [](const Op& op) { return op.kind == OpKind::Add; });
+    const auto first_cancel = std::find_if(workload.measured.begin(), workload.measured.end(),
+                                           [](const Op& op) { return op.kind == OpKind::Cancel; });
+    if (first_add == workload.measured.end() || first_cancel == workload.measured.end()) {
+      throw std::runtime_error("self-check: " + spec.name + " lacks an add or a cancel");
+    }
+    const auto at = [&](auto it) { return static_cast<std::size_t>(it - workload.measured.begin()); };
+
+    Workload more = workload;  // One more share: no trade, the same resting orders.
+    more.measured[at(first_add)].request.quantity += 1;
+    expect_mismatch(more, spec.name + ": an order with another quantity");
+
+    Workload further = workload;  // One tick further from the mid: still passive.
+    OrderRequest& request = further.measured[at(first_add)].request;
+    request.price += request.side == Side::Buy ? -1 : 1;
+    expect_mismatch(further, spec.name + ": an order at another price");
+
+    Workload missing = workload;  // A cancel of an order that is not there.
+    missing.measured[at(first_cancel)].cancel_id = 1'000'000'000'000ULL;
+    expect_mismatch(missing, spec.name + ": a cancel that fails");
+    ++checked;
+  }
+  if (checked != 3) {
+    throw std::runtime_error("self-check: workloads missing");
+  }
+  std::printf("self-check passed: 3 workloads verify as recorded, and 9 changed replays fail\n");
+}
+
+// ---- Memory --------------------------------------------------------------------------------
 
 struct MemoryResult {
   std::size_t orders = 0;
@@ -271,11 +350,13 @@ struct MemoryResult {
 
 // The heap a book of `orders` resting orders occupies: the engine's live heap bytes (the
 // allocator's usable sizes) and its allocations, counted exactly, and the growth of the
-// process's resident set while it is built.
+// process's resident set while it is built. Run in a fresh process (--memory-only), so no
+// memory freed earlier is reused.
 MemoryResult measure_memory(std::size_t orders, std::size_t levels) {
   const std::vector<OrderRequest> requests = resting_orders(orders, levels);
   MemoryResult result;
   result.orders = orders;
+  result.levels_per_side = levels;
   set_allocation_counting(true);
   const AllocationCounters before = allocation_counters();
   const std::int64_t rss_before = resident_bytes();
@@ -283,7 +364,7 @@ MemoryResult measure_memory(std::size_t orders, std::size_t levels) {
     EngineTarget target;
     Checksum checksum;
     for (const OrderRequest& request : requests) {
-      checksum.add(target.submit(request));
+      checksum.add_light(target.submit(request));
     }
     const AllocationCounters after = allocation_counters();
     const std::int64_t rss_after = resident_bytes();
@@ -295,9 +376,32 @@ MemoryResult measure_memory(std::size_t orders, std::size_t levels) {
     result.allocations_per_order =
         static_cast<double>(after.allocations - before.allocations) / n;
     result.rss_bytes_per_order = static_cast<double>(rss_after - rss_before) / n;
-    result.levels_per_side = levels;
   }
   set_allocation_counting(false);
+  return result;
+}
+
+// Measures one size in a child process (this program with --memory-only).
+MemoryResult measure_memory_in_child(const std::string& program, std::size_t orders) {
+  std::string quoted = "'";
+  for (const char c : program) {
+    quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
+  }
+  quoted += "'";
+  const std::string command = quoted + " --memory-only " + std::to_string(orders);
+  FILE* child = popen(command.c_str(), "r");
+  if (child == nullptr) {
+    throw std::runtime_error("memory: cannot start " + program);
+  }
+  MemoryResult result;
+  const int fields = std::fscanf(child, "memory %zu %zu %lf %lf %lf", &result.orders,
+                                 &result.levels_per_side, &result.heap_bytes_per_order,
+                                 &result.allocations_per_order, &result.rss_bytes_per_order);
+  const int status = pclose(child);
+  if (fields != 5 || status != 0 || result.orders != orders) {
+    throw std::runtime_error("memory: the measurement of " + std::to_string(orders) +
+                             " orders failed");
+  }
   return result;
 }
 
@@ -345,8 +449,9 @@ void write_json(const std::string& path, const Options& options, const Environme
       << ", \"logical_cpus\": " << environment.logical_cpus
       << ", \"memory_bytes\": " << environment.memory_bytes
       << ", \"scheduling\": " << json_string(scheduling) << "},\n";
-  out << "  \"clock\": {\"resolution_ns\": " << clock.resolution_ns
-      << ", \"read_overhead_p50_ns\": " << clock.read_overhead_p50_ns << "},\n";
+  out << "  \"clock\": {\"tick_ns\": " << clock.tick_ns
+      << ", \"min_read_gap_ns\": " << clock.min_read_gap_ns
+      << ", \"read_gap_p50_ns\": " << clock.read_gap_p50_ns << "},\n";
   out << "  \"config\": {\"quick\": " << (options.quick ? "true" : "false")
       << ", \"repetitions\": " << options.repetitions << "},\n";
   out << "  \"sizes\": {\"order_bytes\": " << sizeof(Order)
@@ -412,6 +517,16 @@ void print_row(const WorkloadResult& r) {
 
 int run(int argc, char** argv) {
   const Options options = parse_options(argc, argv);
+  if (options.memory_only > 0) {
+    const MemoryResult m = measure_memory(options.memory_only, 1'000);
+    std::printf("memory %zu %zu %.6f %.6f %.6f\n", m.orders, m.levels_per_side,
+                m.heap_bytes_per_order, m.allocations_per_order, m.rss_bytes_per_order);
+    return 0;
+  }
+  if (options.self_check) {
+    self_check();
+    return 0;
+  }
   const std::vector<WorkloadSpec> specs = workload_specs(options.quick);
   const auto selected = [&](const std::string& name) {
     return options.filter.empty() || name.find(options.filter) != std::string::npos;
@@ -430,15 +545,15 @@ int run(int argc, char** argv) {
               environment.cpu.c_str(), environment.logical_cpus,
               static_cast<double>(environment.memory_bytes) / (1024.0 * 1024.0 * 1024.0),
               environment.os.c_str(), environment.compiler.c_str());
-  std::printf("build     %s\nschedule  %s\nclock     resolution %lld ns, read overhead %lld ns "
-              "(median)\nmode      %s, %d repetitions\n\n",
-              environment.build_type.c_str(), scheduling.c_str(),
-              static_cast<long long>(clock.resolution_ns),
-              static_cast<long long>(clock.read_overhead_p50_ns),
-              options.quick ? "quick" : "full", options.repetitions);
+  std::printf("build     %s\nschedule  %s\nclock     tick %.2f ns; consecutive reads at least "
+              "%lld ns apart, median %lld ns\nmode      %s, %d repetitions\n\n",
+              environment.build_type.c_str(), scheduling.c_str(), clock.tick_ns,
+              static_cast<long long>(clock.min_read_gap_ns),
+              static_cast<long long>(clock.read_gap_p50_ns), options.quick ? "quick" : "full",
+              options.repetitions);
 
-  // Memory first, in a fresh process, so the resident-set growth is not hidden by memory that
-  // earlier workloads freed and the allocator kept.
+  // Each size in its own process, so that the resident-set growth is not hidden by memory an
+  // earlier measurement freed and the allocator kept.
   std::vector<MemoryResult> memory;
   if (selected("memory")) {
     const std::vector<std::size_t> sizes =
@@ -447,7 +562,7 @@ int run(int argc, char** argv) {
     std::printf("%-26s %12s %14s %12s\n", "memory (1,000 levels)", "heap B/order",
                 "allocs/order", "RSS B/order");
     for (const std::size_t orders : sizes) {
-      memory.push_back(measure_memory(orders, 1'000));
+      memory.push_back(measure_memory_in_child(argv[0], orders));
       const MemoryResult& m = memory.back();
       std::printf("%-26zu %12.1f %14.3f %12.1f\n", m.orders, m.heap_bytes_per_order,
                   m.allocations_per_order, m.rss_bytes_per_order);

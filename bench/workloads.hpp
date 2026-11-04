@@ -32,10 +32,11 @@ struct Op {
 };
 
 // One benchmark: the operations that build the starting book (replayed before every
-// measurement, untimed), the operations that are measured, and the state the engine must end
-// in. Workloads are recorded against a real engine (see Planner), so every cancel names an
-// order that is resting at that moment; the expected end state checks that the replay
-// reproduced the recording exactly.
+// measurement, untimed), the operations that are measured, and fingerprints of what the
+// recording produced. Workloads are recorded against a real engine (see Planner), so every
+// cancel names an order that is resting at that moment. A replay must reproduce the
+// recording exactly: every result (full checksum), the final book (every level) and the
+// final sequence number; the timed replays are checked against the light checksum.
 struct Workload {
   std::vector<Op> setup;
   std::vector<Op> measured;
@@ -43,6 +44,9 @@ struct Workload {
   std::size_t final_order_count = 0;
   std::size_t start_order_count = 0;
   std::size_t start_levels_per_side = 0;
+  std::uint64_t full_checksum = 0;   // Every result, setup and measured (add_full).
+  std::uint64_t light_checksum = 0;  // The measured operations' results (add_light).
+  std::uint64_t book_checksum = 0;   // The final book, every level (add_book).
 };
 
 struct WorkloadSpec {

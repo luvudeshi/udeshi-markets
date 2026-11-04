@@ -16,9 +16,9 @@ python3 tools/bench_report.py results.json --baseline bench/results/apple-m4-bas
     --update docs/benchmarking.md                            # regenerate the tables below
 ```
 
-CI runs the full set on every push, in a Release build on a GitHub-hosted Linux runner. It
-fails if any workload does not replay exactly, and keeps the JSON as an artifact (see
-[Linux](#linux-github-hosted-runner)).
+CI runs the full set on every push, in a Release build on a GitHub-hosted Linux runner, after
+`udeshi_bench --self-check`. It fails if any replay differs from its recording, and keeps the
+JSON as an artifact (see [Linux](#linux-github-hosted-runner)).
 
 ## Method
 
@@ -33,9 +33,15 @@ fails if any workload does not replay exactly, and keeps the JSON as an artifact
     moment and every "add" really rests.
   * It is then replayed on fresh engines. The *setup* operations build the starting book,
     untimed; the *measured* operations are timed.
-  * Every replay must end in the recorded state (the same last sequence number and resting
-    order count). A checksum of every result must agree across all the replays of a workload,
-    or the run fails.
+  * Every replay is checked against the recording, and the run fails on any difference:
+    * the first replay (also the warm-up) compares every field of every result, trades
+      included;
+    * every later replay compares a light checksum of its results (a few instructions per
+      operation, so the timing is unaffected);
+    * every replay compares the final book, level by level, and the last sequence number.
+  * `--self-check` shows this catches real differences. Three recorded workloads must verify;
+    changed copies of them must fail: an order with one more share, an order one tick
+    further out, and a cancel of an order that is not there.
 * **Throughput.**
   * The measured operations run in one timed loop with no per-operation instrumentation.
   * The table shows the median of the repetitions (min–max in brackets), after one untimed
@@ -50,8 +56,8 @@ fails if any workload does not replay exactly, and keeps the JSON as an artifact
   * Throughput and latency answer different questions. In an untimed stream the processor
     overlaps the memory accesses of consecutive operations. Timing each one separately
     prevents that, so for memory-bound work an operation's latency exceeds its share of the
-    stream. Random cancels in a 100k-order book cost 17 ns each in a stream but take a median
-    of one 41 ns clock tick each, measured alone.
+    stream. Random cancels in a 100k-order book cost 17 ns each in a stream, but 28 ns each on
+    average when timed one at a time.
   * On Apple silicon the clock ticks at 24 MHz, so these samples are multiples of 41.67 ns,
     and an operation shorter than one tick reads as 0 or 41 ns. That is why medians are often
     exactly 41 or 42 ns. The throughput means above are exact; on Linux the clock resolves
@@ -59,11 +65,12 @@ fails if any workload does not replay exactly, and keeps the JSON as an artifact
 * **Allocations.** The benchmark binary replaces the global `operator new`, and a third
   replay counts allocations per operation, by kind of operation. Counting is off in the timed
   replays.
-* **Memory.** A book of *N* resting orders is built from scratch, before any other workload
-  runs. *Heap bytes per order* is the growth of live heap memory, using the allocator's
-  usable block sizes (`malloc_size` on macOS, `malloc_usable_size` on Linux), divided by *N*.
-  *RSS growth* is the growth of the process's resident set; it lags the heap, because pages
-  become resident when first touched.
+* **Memory.** A book of *N* resting orders is built from scratch, each size in a fresh
+  process, so no memory freed earlier is reused.
+  * *Heap bytes per order* is the growth of live heap memory, using the allocator's usable
+    block sizes (`malloc_size` on macOS, `malloc_usable_size` on Linux), divided by *N*.
+  * *RSS growth* is the growth of the process's resident set. It also counts the allocator's
+    own metadata and whole pages, so it exceeds the heap figure for small books.
 * **Scheduling.** On macOS the benchmark asks for the user-interactive quality of service, so
   the scheduler runs it on a performance core (macOS offers no pinning). The machine was on
   mains power. A web browser was open and busy on other cores, which is why the throughput
@@ -93,7 +100,7 @@ fails if any workload does not replay exactly, and keeps the JSON as an artifact
 | Compiler | Clang 17.0.0 (clang-1700.0.13.5) |
 | Build | Release ( -O3 -DNDEBUG) |
 | Scheduling | QoS user-interactive (macOS schedules it on a performance core) |
-| Clock | `std::chrono::steady_clock`: resolution 41 ns, two consecutive reads 41 ns apart (median) |
+| Clock | `std::chrono::steady_clock`: ticks of 41.67 ns; two consecutive reads at least 41 ns apart (median 0 ns) |
 | Repetitions | 7 timed replays per workload, after a warm-up |
 | Object sizes | `Order` 88 B, `PriceLevel` 40 B, `Trade` 88 B |
 <!-- bench:environment:end -->
@@ -105,50 +112,50 @@ fails if any workload does not replay exactly, and keeps the JSON as an artifact
 
 | Workload | Operations | M ops/s (min–max) | Mean ns | p50 | p95 | p99 | p99.9 | Max | Allocations per op |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `book_size/1k` | 400,000 | 15.9 (15.8–15.9) | 63 | 42 | 125 | 125 | 167 | 8,583 | 0.30 |
-| `book_size/10k` | 400,000 | 31.2 (31.0–31.3) | 32 | 41 | 83 | 84 | 125 | 4,958 | 0.00 |
-| `book_size/100k` | 400,000 | 29.5 (29.4–29.6) | 34 | 42 | 84 | 125 | 209 | 7,792 | 0.00 |
-| `book_size/1M` | 400,000 | 8.9 (8.4–9.1) | 112 | 125 | 209 | 291 | 375 | 10,792 | 0.00 |
+| `book_size/1k` | 400,000 | 15.9 (15.8–15.9) | 63 | 42 | 125 | 125 | 167 | 6,417 | 0.30 |
+| `book_size/10k` | 400,000 | 31.4 (31.3–31.6) | 32 | 41 | 83 | 84 | 125 | 6,208 | 0.00 |
+| `book_size/100k` | 400,000 | 28.4 (27.8–29.8) | 35 | 42 | 83 | 125 | 167 | 4,291 | 0.00 |
+| `book_size/1M` | 400,000 | 8.8 (8.0–9.3) | 114 | 84 | 209 | 291 | 375 | 2,542 | 0.00 |
 
 **Price levels**
 
 | Workload | Operations | M ops/s (min–max) | Mean ns | p50 | p95 | p99 | p99.9 | Max | Allocations per op |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `price_levels/1` | 400,000 | 50.5 (45.6–51.5) | 20 | 41 | 42 | 42 | 84 | 4,375 | 0.00 |
-| `price_levels/10` | 400,000 | 44.2 (43.7–44.6) | 23 | 41 | 42 | 83 | 84 | 4,250 | 0.00 |
-| `price_levels/100` | 400,000 | 32.0 (23.1–37.7) | 31 | 41 | 42 | 84 | 125 | 3,500 | 0.00 |
-| `price_levels/1k` | 400,000 | 29.3 (29.0–29.5) | 34 | 42 | 83 | 84 | 125 | 6,625 | 0.00 |
-| `price_levels/10k` | 400,000 | 20.0 (19.6–20.1) | 50 | 42 | 125 | 125 | 208 | 4,458 | 0.00 |
+| `price_levels/1` | 400,000 | 53.4 (52.3–55.1) | 19 | 0 | 42 | 42 | 84 | 1,667 | 0.00 |
+| `price_levels/10` | 400,000 | 45.3 (43.8–46.2) | 22 | 41 | 42 | 83 | 125 | 1,750 | 0.00 |
+| `price_levels/100` | 400,000 | 37.4 (36.3–37.9) | 27 | 41 | 42 | 83 | 125 | 1,208 | 0.00 |
+| `price_levels/1k` | 400,000 | 29.2 (28.7–29.5) | 34 | 42 | 83 | 84 | 125 | 292 | 0.00 |
+| `price_levels/10k` | 400,000 | 19.6 (19.0–19.7) | 51 | 42 | 125 | 167 | 209 | 917 | 0.00 |
 
 **Submission patterns**
 
 | Workload | Operations | M ops/s (min–max) | Mean ns | p50 | p95 | p99 | p99.9 | Max | Allocations per op |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `patterns/passive` | 400,000 | 19.2 (18.8–19.7) | 52 | 42 | 84 | 125 | 208 | 879,458 | 0.00 |
-| `patterns/maker_taker` | 400,000 | 28.8 (28.2–28.9) | 35 | 42 | 83 | 84 | 125 | 10,666 | 0.50 |
-| `patterns/sweep_1` | 22,000 | 33.7 (33.3–34.0) | 30 | 41 | 167 | 208 | 209 | 375 | 0.27 |
-| `patterns/sweep_10` | 202,000 | 29.9 (29.8–30.0) | 33 | 41 | 42 | 125 | 1708 | 4,416 | 0.15 |
-| `patterns/sweep_50` | 1,002,000 | 29.5 (29.4–29.5) | 34 | 41 | 42 | 42 | 7625 | 12,250 | 0.11 |
-| `patterns/mixed` | 2,000,000 | 26.9 (26.8–26.9) | 37 | 41 | 84 | 167 | 250 | 11,375 | 0.22 |
+| `patterns/passive` | 400,000 | 18.3 (15.6–18.9) | 55 | 42 | 125 | 125 | 208 | 1,243,875 | 0.00 |
+| `patterns/maker_taker` | 400,000 | 28.3 (28.1–28.6) | 35 | 42 | 83 | 84 | 125 | 1,292 | 0.50 |
+| `patterns/sweep_1` | 22,000 | 33.6 (33.1–33.8) | 30 | 41 | 167 | 208 | 209 | 375 | 0.27 |
+| `patterns/sweep_10` | 202,000 | 29.4 (29.3–29.6) | 34 | 41 | 42 | 125 | 1709 | 2,458 | 0.15 |
+| `patterns/sweep_50` | 1,002,000 | 29.4 (29.3–29.4) | 34 | 41 | 42 | 42 | 7584 | 11,875 | 0.11 |
+| `patterns/mixed` | 2,000,000 | 26.7 (26.6–26.8) | 37 | 41 | 84 | 167 | 250 | 8,416 | 0.22 |
 
 **Cancellation**
 
 | Workload | Operations | M ops/s (min–max) | Mean ns | p50 | p95 | p99 | p99.9 | Max | Allocations per op |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `cancel/random/100k` | 100,000 | 57.5 (40.2–65.2) | 17 | 41 | 125 | 208 | 292 | 5,583 | 0.00 |
-| `cancel/oldest_first/100k` | 100,000 | 84.2 (83.4–84.8) | 12 | 0 | 42 | 125 | 167 | 3,042 | 0.00 |
-| `cancel/newest_first/100k` | 100,000 | 87.4 (86.5–88.1) | 11 | 0 | 42 | 83 | 125 | 9,500 | 0.00 |
-| `cancel/random/1M` | 1,000,000 | 15.6 (15.2–15.7) | 64 | 125 | 250 | 292 | 458 | 31,417 | 0.00 |
-| `cancel/oldest_first/1M` | 1,000,000 | 30.5 (30.1–30.7) | 33 | 42 | 125 | 167 | 375 | 15,042 | 0.00 |
-| `cancel/newest_first/1M` | 1,000,000 | 30.6 (30.3–31.2) | 33 | 42 | 125 | 167 | 375 | 8,584 | 0.00 |
-| `cancel/missing` | 400,000 | 360.1 (358.4–360.9) | 3 | 0 | 42 | 42 | 42 | 9,875 | 0.00 |
-| `cancel/requote` | 400,000 | 61.7 (61.6–61.9) | 16 | 0 | 42 | 42 | 83 | 6,292 | 0.01 |
+| `cancel/random/100k` | 100,000 | 58.9 (57.0–61.4) | 17 | 0 | 84 | 125 | 250 | 1,083 | 0.00 |
+| `cancel/oldest_first/100k` | 100,000 | 79.4 (77.6–81.2) | 13 | 0 | 42 | 84 | 125 | 1,000 | 0.00 |
+| `cancel/newest_first/100k` | 100,000 | 80.7 (77.9–83.2) | 12 | 0 | 42 | 84 | 167 | 1,542 | 0.00 |
+| `cancel/random/1M` | 1,000,000 | 14.9 (14.7–15.0) | 67 | 84 | 250 | 292 | 792 | 11,583 | 0.00 |
+| `cancel/oldest_first/1M` | 1,000,000 | 30.0 (29.7–30.2) | 33 | 42 | 84 | 166 | 333 | 11,042 | 0.00 |
+| `cancel/newest_first/1M` | 1,000,000 | 30.6 (30.2–30.8) | 33 | 42 | 84 | 167 | 375 | 13,625 | 0.00 |
+| `cancel/missing` | 400,000 | 317.4 (314.7–333.5) | 3 | 0 | 42 | 42 | 42 | 5,917 | 0.00 |
+| `cancel/requote` | 400,000 | 60.9 (60.2–61.2) | 16 | 0 | 42 | 42 | 42 | 14,667 | 0.01 |
 
 **Through the Exchange (matching plus market data)**
 
 | Workload | Operations | M ops/s (min–max) | Mean ns | p50 | p95 | p99 | p99.9 | Max | Allocations per op |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `exchange/mixed` | 2,000,000 | 25.0 (24.4–25.1) | 40 | 42 | 125 | 167 | 250 | 6,583 | 0.22 |
+| `exchange/mixed` | 2,000,000 | 24.6 (24.4–24.7) | 41 | 41 | 125 | 167 | 250 | 8,167 | 0.22 |
 <!-- bench:workloads:end -->
 
 **The mixed flow, by kind of operation:**
@@ -156,10 +163,10 @@ fails if any workload does not replay exactly, and keeps the JSON as an artifact
 <!-- bench:mixed:start -->
 | Operation | Count | Mean ns | p50 | p95 | p99 | p99.9 | Max | Allocations per op |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| add | 1,017,742 | 30.0 | 41 | 42 | 83 | 84 | 9,000 | 0.14 |
-| cancel | 687,688 | 23.3 | 41 | 42 | 42 | 84 | 10,375 | 0.00 |
-| take | 196,151 | 98.2 | 84 | 167 | 209 | 292 | 11,375 | 1.00 |
-| market | 98,419 | 64.2 | 42 | 125 | 167 | 250 | 7,625 | 1.00 |
+| add | 1,017,742 | 29.4 | 41 | 42 | 83 | 125 | 8,416 | 0.14 |
+| cancel | 687,688 | 22.1 | 41 | 42 | 42 | 125 | 4,750 | 0.00 |
+| take | 196,151 | 96.6 | 84 | 167 | 209 | 292 | 5,292 | 1.00 |
+| market | 98,419 | 63.0 | 42 | 125 | 167 | 250 | 4,083 | 1.00 |
 <!-- bench:mixed:end -->
 
 **Memory per resting order** (1,000 price levels per side):
@@ -167,9 +174,9 @@ fails if any workload does not replay exactly, and keeps the JSON as an artifact
 <!-- bench:memory:start -->
 | Resting orders | Levels per side | Heap bytes per order | Allocations per order | RSS growth per order |
 | ---: | ---: | ---: | ---: | ---: |
-| 10,000 | 1,000 | 186.3 | 0.201 | 83.6 |
-| 100,000 | 1,000 | 141.9 | 0.021 | 127.5 |
-| 1,000,000 | 1,000 | 130.1 | 0.003 | 132.7 |
+| 10,000 | 1,000 | 186.3 | 0.201 | 234.3 |
+| 100,000 | 1,000 | 141.9 | 0.021 | 149.9 |
+| 1,000,000 | 1,000 | 130.1 | 0.003 | 143.0 |
 <!-- bench:memory:end -->
 
 ## What the measurements changed
@@ -181,9 +188,7 @@ pointed at two causes:
   `sample` profiler put `malloc` and `free` above everything else, followed by the hash table
   in `OrderBook::insert`. The order-id index was a `std::unordered_map`:
   * every resting order cost one allocation to add and one free to cancel;
-  * every lookup followed a pointer to a node somewhere in the heap;
-  * growing the table rehashed a million nodes at once, which showed as a 13.6 ms
-    worst-case operation.
+  * every lookup followed a pointer to a node somewhere in the heap.
 
   `OrderIndex` replaced it ([matching-engine.md](matching-engine.md#data-structures)). It is
   open addressing over one array of `{id, Order*}` slots, with Fibonacci hashing and
@@ -192,40 +197,55 @@ pointed at two causes:
   1.9 times each, because their trades vector grew 1 → 2 → 4. It now reserves room for 8
   trades at the first trade.
 
-Neither change alters behaviour. The golden digests, the differential tests against the
-reference model, and the Python suite are unchanged. The index has its own tests (including
-the wrap-around cases of backward-shift deletion) and six mutants in the mutation suite.
+Neither change alters behaviour through the engine:
+* the golden digests, the differential tests against the reference model, and the Python suite
+  are unchanged;
+* `OrderBook::insert`, the low-level primitive, now also rejects order id 0, which the engine
+  never assigns and the index uses to mark an empty slot;
+* the index has its own tests, including the wrap-around cases of backward-shift deletion, and
+  seven mutants in the mutation suite.
 
 Same machine and workloads, before → after:
 
 <!-- bench:comparison:start -->
 | Workload | Before, M ops/s | After, M ops/s | Speed-up | Max latency before → after | Allocations per op before → after |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `book_size/1k` | 13.5 | 15.9 | 1.18× | 10,583 → 8,583 ns | 0.80 → 0.30 |
-| `book_size/10k` | 17.4 | 31.2 | 1.80× | 6,375 → 4,958 ns | 0.50 → 0.00 |
-| `book_size/100k` | 16.1 | 29.5 | 1.83× | 5,583 → 7,792 ns | 0.50 → 0.00 |
-| `book_size/1M` | 4.7 | 8.9 | 1.89× | 13,625,500 → 10,792 ns | 0.50 → 0.00 |
-| `price_levels/1` | 18.8 | 50.5 | 2.69× | 449,209 → 4,375 ns | 0.50 → 0.00 |
-| `price_levels/10` | 11.1 | 44.2 | 3.98× | 271,834 → 4,250 ns | 0.50 → 0.00 |
-| `price_levels/100` | 12.4 | 32.0 | 2.59× | 450,333 → 3,500 ns | 0.50 → 0.00 |
-| `price_levels/1k` | 12.3 | 29.3 | 2.39× | 234,000 → 6,625 ns | 0.50 → 0.00 |
-| `price_levels/10k` | 11.4 | 20.0 | 1.76× | 394,125 → 4,458 ns | 0.50 → 0.00 |
-| `patterns/passive` | 16.3 | 19.2 | 1.18× | 534,208 → 879,458 ns | 1.00 → 0.00 |
-| `patterns/maker_taker` | 14.8 | 28.8 | 1.94× | 8,042 → 10,666 ns | 1.46 → 0.50 |
-| `patterns/sweep_1` | 14.8 | 33.7 | 2.27× | 917 → 375 ns | 1.45 → 0.27 |
-| `patterns/sweep_10` | 15.2 | 29.9 | 1.97× | 4,583 → 4,416 ns | 1.17 → 0.15 |
-| `patterns/sweep_50` | 14.9 | 29.5 | 1.98× | 26,500 → 12,250 ns | 1.12 → 0.11 |
-| `patterns/mixed` | 14.5 | 26.9 | 1.85× | 13,250 → 11,375 ns | 0.84 → 0.22 |
-| `cancel/random/100k` | 13.5 | 57.5 | 4.26× | 424,583 → 5,583 ns | 0.00 → 0.00 |
-| `cancel/oldest_first/100k` | 30.1 | 84.2 | 2.80× | 100,583 → 3,042 ns | 0.00 → 0.00 |
-| `cancel/newest_first/100k` | 38.0 | 87.4 | 2.30× | 7,333 → 9,500 ns | 0.00 → 0.00 |
-| `cancel/random/1M` | 3.1 | 15.6 | 5.01× | 551,125 → 31,417 ns | 0.00 → 0.00 |
-| `cancel/oldest_first/1M` | 19.8 | 30.5 | 1.54× | 293,541 → 15,042 ns | 0.00 → 0.00 |
-| `cancel/newest_first/1M` | 29.3 | 30.6 | 1.05× | 39,708 → 8,584 ns | 0.00 → 0.00 |
-| `cancel/missing` | 372.3 | 360.1 | 0.97× | 12,542 → 9,875 ns | 0.00 → 0.00 |
-| `cancel/requote` | 39.7 | 61.7 | 1.55× | 32,584 → 6,292 ns | 0.51 → 0.01 |
-| `exchange/mixed` | 13.6 | 25.0 | 1.84× | 35,959 → 6,583 ns | 0.84 → 0.22 |
+| `book_size/1k` | 13.5 | 15.9 | 1.18× | 10,583 → 6,417 ns | 0.80 → 0.30 |
+| `book_size/10k` | 17.4 | 31.4 | 1.81× | 6,375 → 6,208 ns | 0.50 → 0.00 |
+| `book_size/100k` | 16.1 | 28.4 | 1.77× | 5,583 → 4,291 ns | 0.50 → 0.00 |
+| `book_size/1M` | 4.7 | 8.8 | 1.86× | 13,625,500 → 2,542 ns | 0.50 → 0.00 |
+| `price_levels/1` | 18.8 | 53.4 | 2.84× | 449,209 → 1,667 ns | 0.50 → 0.00 |
+| `price_levels/10` | 11.1 | 45.3 | 4.08× | 271,834 → 1,750 ns | 0.50 → 0.00 |
+| `price_levels/100` | 12.4 | 37.4 | 3.03× | 450,333 → 1,208 ns | 0.50 → 0.00 |
+| `price_levels/1k` | 12.3 | 29.2 | 2.38× | 234,000 → 292 ns | 0.50 → 0.00 |
+| `price_levels/10k` | 11.4 | 19.6 | 1.72× | 394,125 → 917 ns | 0.50 → 0.00 |
+| `patterns/passive` | 16.3 | 18.3 | 1.12× | 534,208 → 1,243,875 ns | 1.00 → 0.00 |
+| `patterns/maker_taker` | 14.8 | 28.3 | 1.91× | 8,042 → 1,292 ns | 1.46 → 0.50 |
+| `patterns/sweep_1` | 14.8 | 33.6 | 2.27× | 917 → 375 ns | 1.45 → 0.27 |
+| `patterns/sweep_10` | 15.2 | 29.4 | 1.94× | 4,583 → 2,458 ns | 1.17 → 0.15 |
+| `patterns/sweep_50` | 14.9 | 29.4 | 1.98× | 26,500 → 11,875 ns | 1.12 → 0.11 |
+| `patterns/mixed` | 14.5 | 26.7 | 1.84× | 13,250 → 8,416 ns | 0.84 → 0.22 |
+| `cancel/random/100k` | 13.5 | 58.9 | 4.36× | 424,583 → 1,083 ns | 0.00 → 0.00 |
+| `cancel/oldest_first/100k` | 30.1 | 79.4 | 2.64× | 100,583 → 1,000 ns | 0.00 → 0.00 |
+| `cancel/newest_first/100k` | 38.0 | 80.7 | 2.13× | 7,333 → 1,542 ns | 0.00 → 0.00 |
+| `cancel/random/1M` | 3.1 | 14.9 | 4.80× | 551,125 → 11,583 ns | 0.00 → 0.00 |
+| `cancel/oldest_first/1M` | 19.8 | 30.0 | 1.51× | 293,541 → 11,042 ns | 0.00 → 0.00 |
+| `cancel/newest_first/1M` | 29.3 | 30.6 | 1.05× | 39,708 → 13,625 ns | 0.00 → 0.00 |
+| `cancel/missing` | 372.3 | 317.4 | 0.85× | 12,542 → 5,917 ns | 0.00 → 0.00 |
+| `cancel/requote` | 39.7 | 60.9 | 1.53× | 32,584 → 14,667 ns | 0.51 → 0.01 |
+| `exchange/mixed` | 13.6 | 24.6 | 1.81× | 35,959 → 8,167 ns | 0.84 → 0.22 |
 <!-- bench:comparison:end -->
+
+**Worst cases.** The baseline's 13.6 ms maximum in `book_size/1M` was not the index: that
+phase never grows it. It was a one-off event outside the engine, of the kind the *Max* column
+records. The new index still rehashes every entry when it doubles. Measured on the M4 with
+orders added one at a time, a single insert takes:
+* about 1.6 ms when the index passes 2^18 entries;
+* 3–4 ms at 2^19;
+* 6.6 ms at 2^20, and once 17.6 ms.
+
+`patterns/passive` shows the first of these as its 1.2 ms maximum. A production engine would
+pre-size the index or rehash incrementally; growth is amortised O(1) here.
 
 **What still costs the most** is `OrderBook::insert` and `OrderBook::remove`. They include the
 price levels' `std::map`: a tree walk per new order, and a node allocated or freed whenever a
@@ -321,8 +341,9 @@ Milliseconds per request, before → after (same engine build):
 
 * **The cost moved, it did not vanish.** It is now spread across the run: with the observer
   attached, kernel throughput fell about 7% (74.8k → 69.8k events/s in the same comparison).
-* **An experiment pays the same in total.** An observed run plus one `analyze()` took 0.536 s
-  before and 0.542 s after.
+* **A whole experiment costs about 5% more.** From the result files, an observed 10-minute
+  run plus one `analyze()` took 0.498 + 0.011 = 0.509 s before and 0.534 + 0.001 = 0.535 s
+  after. That is the price of a per-request cost that no longer grows with the run.
 * **The live server's per-request cost no longer grows.** That makes the terminal's polling
   safe for runs of any length.
 <!-- bench:python:end -->
@@ -335,8 +356,8 @@ Milliseconds per request, before → after (same engine build):
 * **Single thread, single instrument.** Books are independent, so instruments could be
   sharded across cores. That is not measured.
 * **Worst cases are rare events.** The *Max* column includes the doubling of the order pool or
-  the id index, page faults on first touch, and interrupts. p99.9 is the better guide to
-  steady-state tails.
+  the id index (see above), page faults on first touch, and interrupts. p99.9 is the better
+  guide to steady-state tails.
 * **Big books are memory-bound.** At a million resting orders the working set (about 130 MB)
   is far beyond the caches, and a random cancel waits on main memory: compare
   `cancel/random/1M` with `cancel/oldest_first/1M`.

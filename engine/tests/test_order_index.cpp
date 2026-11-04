@@ -51,6 +51,17 @@ TEST(OrderIndex, EmptyIndexFindsAndErasesNothing) {
   EXPECT_FALSE(index.erase(1));
 }
 
+// Id 0 marks an empty slot: it is never found and never erased, whatever the table holds.
+TEST(OrderIndex, IdZeroIsNeverAnEntry) {
+  std::vector<Order> storage(16);
+  OrderIndex index;
+  insert(index, 7, node(storage, 7));
+  EXPECT_EQ(index.find(kInvalidOrderId), nullptr);
+  EXPECT_FALSE(index.erase(kInvalidOrderId));
+  EXPECT_EQ(index.size(), 1U);
+  EXPECT_EQ(index.find(7), node(storage, 7));
+}
+
 TEST(OrderIndex, InsertsFindsAndErases) {
   std::vector<Order> storage(16);
   OrderIndex index;

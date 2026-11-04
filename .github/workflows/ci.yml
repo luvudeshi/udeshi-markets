@@ -52,6 +52,8 @@ jobs:
         run: |
           cmake --preset release -DUDESHI_BUILD_TESTS=OFF
           cmake --build --preset release --target udeshi_bench
+      - name: Verification catches replays that differ
+        run: build/release/bench/udeshi_bench --self-check
       - name: Benchmark
         run: build/release/bench/udeshi_bench --json bench-linux.json
       - name: Results

@@ -65,11 +65,13 @@ PriceLevel
   * It replaced `std::unordered_map`, which allocated a node per resting order and chased a
     pointer per lookup.
   * Measured in [benchmarking.md](benchmarking.md), the replacement roughly doubled add/cancel
-    throughput and made random cancels in a 1M-order book 4.6 times faster. It also removed a
-    13 ms rehash stall.
+    throughput and made random cancels in a 1M-order book 4.8 times faster.
+  * When it doubles it rehashes every entry in one go: a single insert then takes about 1.6 ms
+    at 2^18 entries and 6.6 ms at 2^20 (amortised O(1)).
+  * Id 0 marks an empty slot. The engine never assigns it, and `OrderBook::insert` rejects it.
 * **Self-validating primitives.** `OrderBook::insert` rejects anything `check_invariants()` would
-  flag: wrong instrument, duplicate id, quantity or price out of range, invalid side, or a
-  sequence number that isn't younger than the level's tail. It gives the strong exception
+  flag: wrong instrument, id 0 or a duplicate id, quantity or price out of range, invalid side,
+  or a sequence number that isn't younger than the level's tail. It gives the strong exception
   guarantee.
 
 | Operation | Complexity |
@@ -337,7 +339,7 @@ A compile failure counts as a kill only if a `static_assert` fires, since some p
 (deep-const accessors, saturating arithmetic) are tested at compile time. Any other build
 failure marks the mutant itself as invalid.
 
-**Current result: 67/67 killed on both Linux (GCC, libstdc++) and macOS (Clang, libc++).** The
+**Current result: 68/68 killed on both Linux (GCC, libstdc++) and macOS (Clang, libc++).** The
 history behind that number:
 * The first version of the suite, with 20 mutants, missed one: an untested STP cancel
   quantity.
@@ -352,7 +354,7 @@ history behind that number:
   * a shared STP bug in the engine and the model;
   * new[]/delete mismatches hidden by the fault-injection allocator.
 * Each one led to a new test, and all are now in the mutant list.
-* The open-addressing id index (Phase 6) brought six more mutants, killed by the index's
+* The open-addressing id index (Phase 6) brought seven more mutants, killed by the index's
   direct tests (including the wrap-around cases of backward-shift deletion) and by the
   existing book tests:
   * a lookup that gives up after the home slot;
@@ -360,7 +362,8 @@ history behind that number:
   * a shift that ignores the wrap-around;
   * a growth that drops entries;
   * a skipped duplicate check;
-  * an order left out of the index.
+  * an order left out of the index;
+  * an accepted id 0, which the index reserves for empty slots. The Phase 6 review found it.
 
 ## Known limitations
 
@@ -374,11 +377,12 @@ history behind that number:
 * `to_currency` returns a binary `double`. For example, 3 ticks of 0.05 is
   `0.15000000000000002`, so canonical decimal formatting is left to the presentation layer.
 * `std::map` levels allocate a node per new price level, and lookups are O(log L). The
-  benchmarks ([benchmarking.md](benchmarking.md)) show this matters only for books with many
-  sparsely filled levels (about 20 M add/cancel operations/s at 10,000 levels per side, against
-  54 M at one). A flat price-indexed ladder would be the next step there.
-* `SubmitResult::trades` is a `std::vector`, so an order that trades allocates once (and again
-  as the vector grows). That is most of the remaining allocations in a mixed flow (0.33 per
-  operation).
+  benchmarks ([benchmarking.md](benchmarking.md)) show this matters most for books with many
+  sparsely filled levels: about 20 M add/cancel operations/s at 10,000 levels per side, against
+  53 M at one. A flat price-indexed ladder would be the next step there.
+* `SubmitResult::trades` is a `std::vector`, so an order that trades allocates once, and again
+  past 8 trades. In a mixed flow that is 0.15 of the 0.22 allocations per operation.
+* The id index rehashes in one go when it doubles (above): a multi-millisecond insert every
+  time a book passes a power of two of resting orders.
 * `Exchange::notional` is a `double` accumulator. Each term is exact, but the running sum has a
   relative rounding error of about 1e‑16.

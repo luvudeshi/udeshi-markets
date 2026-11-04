@@ -7,12 +7,12 @@ What has been built, the decisions behind it, and what is next. The requirements
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 1 | C++ matching engine, price-time priority, cancellation, tests | **Done.** CI green; 61/61 mutants killed on Linux and macOS. |
+| 1 | C++ matching engine, price-time priority, cancellation, tests | **Done.** CI green; 61/61 mutants killed on Linux and macOS (68/68 after Phase 6). |
 | 2 | pybind11 bindings, exchange API, discrete-event loop, integration tests | **Done.** 68 review findings, all reproduced and fixed with tests. |
 | 3 | Trading agents, market dynamics, portfolio accounting | **Done.** Five strategies, a market environment, exact accounting, agents in the API. |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | **Done.** Documented metrics, an experiment framework, persistent experiments in the API. |
 | 5 | Next.js frontend, WebSocket integration, visualisations | **Done.** A live trading terminal and an experiment dashboard, tested end to end against the real backend. |
-| 6 | Benchmarks, profiling, optimisation, documentation | Not started |
+| 6 | Benchmarks, profiling, optimisation, documentation | **Done.** Measured benchmarks; two profiles, two optimisations (engine about 2×, live analytics constant-time). |
 
 ## Phase 1: matching engine
 
@@ -436,18 +436,119 @@ test, most in `e2e/regressions.spec.ts`):
 * The chart draws trade dots for the 200 most recent trades per symbol only.
 * The terminal trades as the one API user. There are no accounts, as in the brief.
 
-## Next: Phase 6 (benchmarks, profiling, optimisation, documentation)
+## Phase 6: benchmarks, profiling, optimisation, documentation
 
-Not started; waiting for the user's go-ahead. Scope (brief §13–14 and the Phase 6 list):
-* **Benchmark the C++ engine.** Measure orders per second, mean, median, p95 and p99 latency,
-  and memory, across book sizes, numbers of price levels, submission patterns and
-  high-volume cancellation.
-* **Optimise only after measuring.** Profile first. Known candidates: incremental live
-  analytics and leaderboard Sharpe ratios, which today are linear in the run's length per
-  request.
-* **Write `docs/benchmarking.md`** with the methodology and hardware, and put measured
-  results in the README.
-* **Run the complete test suite** and finish the documentation.
+**Delivered** (documented in [benchmarking.md](benchmarking.md)):
+* **An engine benchmark harness** (`bench/`, C++, no new dependencies).
+  * Each workload is recorded once against a real engine, so every cancel names a resting
+    order. It is then replayed exactly on fresh engines, and every replay must end in the
+    recorded state, with a checksum that agrees across replays.
+  * It measures:
+    * throughput (median of repetitions);
+    * per-operation latency (nearest-rank p50, p95, p99, p99.9 and max, by kind of
+      operation);
+    * allocations per operation (a counting `operator new`);
+    * heap and RSS per resting order.
+  * Workloads:
+    * book sizes from 1k to 1M orders;
+    * 1 to 10k price levels per side;
+    * submission patterns: passive, maker/taker, 1-, 10- and 50-level sweeps, and a mixed
+      flow;
+    * cancellation storms: random, oldest and newest first, missing, requoting;
+    * the Exchange layer.
+* **A simulation benchmark** (`bench/simulation_bench.py`): the kernel's events/s, and what
+  the live API pays per request against run length.
+* **Reporting and CI.** The tables in the docs are generated from the result JSON
+  (`tools/bench_report.py`). A CI job runs the full engine set on Linux on every push and keeps
+  the JSON.
+* **Measured results** (Apple M4, one core):
+  * a mixed order flow at 26.7 M operations/s, a mean of 37 ns;
+  * random cancels on a 1M-order book at 14.9 M/s;
+  * 130 heap bytes per resting order;
+  * the Python kernel at about 87,000 events/s.
+
+**Profiles and optimisations** (each measured before and after on the same workloads):
+* **Engine, the id index.** `sample` showed `malloc` and `free` first, from the
+  `std::unordered_map` order-id index (a heap node per resting order). `OrderIndex` replaced
+  it: open addressing over one array, Fibonacci hashing, backward-shift deletion, no
+  allocation per order.
+  * Add/cancel throughput rose 1.8× at 10k–1M orders and up to 4× with few price levels.
+  * Random cancels on a 1M-order book went 3.1 → 14.9 M/s.
+  * When it doubles, it still rehashes in one go (6.6 ms at 2^20 entries), which is
+    documented.
+* **Engine, the trades vector.** Takers allocated 1.9 times each as it doubled. It now reserves
+  8 trades at the first trade: the mixed flow went 23.8 → 26.7 M/s, and allocations per
+  operation 0.33 → 0.22.
+* **Python, live analytics.** cProfile showed every analytics request, and every leaderboard
+  Sharpe ratio, recomputed over the whole run, at 130 ms per request at 2 simulated hours.
+  `MarketObserver` now keeps running aggregates, and requests cost 0.6 ms at any run length.
+  * Sums, means, drawdowns and counts are bit-for-bit identical; `FloatSum` reproduces
+    CPython's `sum`.
+  * Variances use Welford's algorithm, within 1e-12.
+  * The kernel itself had no single hot spot. Its time is spread over exact `Fraction`
+    accounting, the run digest and enum access, all deliberate, so it was left alone.
+
+**Key decisions:**
+* **Measure the engine, not the harness.** Workloads are generated before timing, and replays
+  are verified so a fast but wrong replay cannot pass. Throughput and isolated latency are
+  reported separately, because they answer different questions (memory-level parallelism in a
+  stream).
+* **Report the instruments' limits.** The Apple clock's 41.67 ns tick is stated beside every
+  percentile, and the Linux runner's 16 ns clock gives a second view.
+* **Optimise only what the profile showed, and stop.** The next engine candidate, a flat
+  price-level ladder, is documented with its evidence (throughput falls as levels thin out)
+  but not built: a deeper change to the book's invariants than the gain justifies yet.
+* **The mutation suite grows with the code.** Seven new mutants cover the index. The
+  `reserve` was placed so an existing mutant still applies, and all 68 are killed on Linux and
+  macOS.
+
+**Fixed along the way:** the Python wheel's CMake build inherited `UDESHI_BUILD_BENCHMARKS`,
+so the API image (whose context has no `bench/`) failed to configure. This was confirmed by
+building from exactly the Dockerfile's files, and fixed.
+
+**Found by the review and fixed** (9 issues, each reproduced first):
+* **`OrderBook::insert` accepted order id 0**, which the new index uses to mark an empty slot.
+  The order was then lost from the index, and a duplicate id 0 was accepted. The engine never
+  assigns id 0, so only direct users of the primitive could hit it. It is now rejected, with
+  a test and a mutant.
+* **Replay verification was too weak.** It compared only the final sequence number and order
+  count, so replays with other prices or quantities passed. Each replay is now checked against
+  the recording: every field of every result, and the final book level by level. `--self-check`
+  in CI shows that nine changed replays fail.
+* **Two claims about worst cases were wrong:**
+  * The docs credited the baseline's 13.6 ms maximum to an index rehash that never happens in
+    that phase.
+  * They said the new index removed rehash stalls. It still rehashes when it doubles,
+    measured at 6.6 ms at 2^20 entries; this is now documented as a limitation.
+* **RSS per order was understated:** each size was measured after earlier books had been
+  freed in the same process. Each size now runs in a fresh process.
+* **Prose figures had drifted from the result files:** speed-ups, a level-count figure, the
+  allocation split, and an experiment cost that appeared in no result file. Every figure was
+  re-derived from the final results, and the README's table is now generated from them like
+  the rest.
+* **The clock's "resolution" was really the shortest read-to-read gap.** The counter's tick is
+  now reported (41.67 ns on the M4, 1 ns on Linux) beside the read gaps.
+* **`RunningMean` silently dropped floats after an int first value.** This was latent: no
+  caller mixes types. Mixing now raises `TypeError`.
+
+**Verification:**
+* C++: 175 engine tests in debug, release and ASan+UBSan; 68/68 mutants killed in CI on Linux
+  and macOS.
+* Python: 453 tests (+30 for the running analytics, including whole-run comparisons with the
+  old batch computation).
+* The benchmark's `--self-check` (in CI) shows replay verification catches changed replays.
+* Frontend: 40 unit tests and 26 Playwright tests.
+* All 14 CI jobs pass.
+
+**Limitations:**
+* Single-threaded matching, one instrument per benchmark. Sharding across cores is not
+  measured.
+* On Apple silicon, per-operation percentiles are quantised to 41.67 ns.
+* The price-level `std::map` still allocates when a level appears and walks a tree per new
+  order.
+* The analytics' raw record (samples, trades) still grows with the run; only the per-request
+  time is constant.
+* The Python kernel (about 30 µs per order) dominates end-to-end simulation speed.
 
 ## Working conventions
 
@@ -482,15 +583,17 @@ Not started; waiting for the user's go-ahead. Scope (brief §13–14 and the Pha
   * Python: `.venv/bin/pytest`, `.venv/bin/mypy`, `.venv/bin/ruff check python backend`, and
     `ruff format --check`.
   * Check every exit code explicitly.
-* **CI** (`ci.yml`, 13 jobs):
+* **CI** (`ci.yml`, 14 jobs):
   * the engine on Linux and macOS in debug, release and ASan+UBSan builds;
   * the Python suite on Linux and macOS;
   * the built wheel, installed non-editable, on Linux and macOS;
   * the frontend: lint, types, generated types, unit tests, Playwright;
+  * the engine benchmarks (Release, Linux; the JSON is kept as an artifact);
   * the Docker images (API and terminal);
   * the storage tests against real PostgreSQL.
 
-  `mutation.yml` runs the 61 engine mutants weekly.
+  `mutation.yml` runs the 68 engine mutants weekly and on demand (`gh workflow run
+  mutation.yml`).
 * **The development machine has neither PostgreSQL nor Docker.** They run only in CI, so
   locally the storage tests use SQLite.
 * **Local port 8000 is taken.** `.claude/launch.json` (git-ignored) runs the API on 8010 and

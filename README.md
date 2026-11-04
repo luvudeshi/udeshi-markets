@@ -40,7 +40,7 @@ environment for studying the resulting market behaviour.
   - golden cross-platform determinism digests;
   - allocation-failure injection;
   - ASan/UBSan with pool poisoning;
-  - mutation testing: 67/67 injected bugs caught on Linux and macOS, re-checked weekly in CI.
+  - mutation testing: 68/68 injected bugs caught on Linux and macOS, re-checked weekly in CI.
 
 ```
 Sell 10 @ 101, Sell 5 @ 102, then Buy 12 @ 102
@@ -133,13 +133,15 @@ Measured, not estimated: one core of an Apple M4, Release build, single instrume
 results from CI, and the profiles behind the optimisations are in
 [docs/benchmarking.md](docs/benchmarking.md).
 
+<!-- bench:readme:start -->
 | Engine workload | Throughput | Mean | p99 | p99.9 |
 | --- | ---: | ---: | ---: | ---: |
-| Mixed flow: adds, cancels, IOC and market orders, about 10k resting orders | 26.9 M ops/s | 37 ns | 167 ns | 250 ns |
-| Same flow through the `Exchange` (plus market data) | 25.0 M ops/s | 40 ns | 167 ns | 250 ns |
-| Add and cancel on a 100k-order book | 29.5 M ops/s | 34 ns | 125 ns | 209 ns |
-| Random cancels on a 1M-order book | 15.6 M ops/s | 64 ns | 292 ns | 458 ns |
-| A market order sweeping 10 levels (100 fills), timed alone | — | 1.6 µs | 1.8 µs | 2.0 µs |
+| Mixed flow: adds, cancels, IOC and market orders, about 10k resting orders | 26.7 M ops/s | 37 ns | 167 ns | 250 ns |
+| Same flow through the `Exchange` (plus market data) | 24.6 M ops/s | 41 ns | 167 ns | 250 ns |
+| Add and cancel on a 100k-order book | 28.4 M ops/s | 35 ns | 125 ns | 167 ns |
+| Random cancels on a 1M-order book | 14.9 M ops/s | 67 ns | 292 ns | 792 ns |
+| A market order sweeping 10 levels (100 fills), timed alone | — | 1.6 µs | 1.8 µs | 2.2 µs |
+<!-- bench:readme:end -->
 
 * **Reading the columns.** Means are per operation in a stream. Percentiles time each
   operation alone, including the clock reads; the Apple clock ticks every 41.7 ns.
@@ -148,9 +150,9 @@ results from CI, and the profiles behind the optimisations are in
 * **Optimisation.** Profiling showed malloc and free first, from a hash-table node per
   resting order. A flat open-addressing index replaced it, and the trades vector now reserves
   room once:
-  * mixed flow 14.5 → 26.9 M ops/s;
-  * random cancels on a 1M-order book 3.1 → 15.6 M ops/s;
-  * the worst-case stall 13.6 ms → 11 µs.
+  * mixed flow 14.5 → 26.7 M ops/s;
+  * random cancels on a 1M-order book 3.1 → 14.9 M ops/s;
+  * allocations per resting order 1.0 → 0.003.
 * **The Python simulation.** The default 26-agent market runs at about 87,000 events/s,
   roughly 1,400 simulated seconds per second. The live analytics the terminal polls now cost
   0.6 ms per request at any run length; at 2 simulated hours they cost 130 ms before.
@@ -267,7 +269,7 @@ uv run pytest                                   # bindings, kernel, API (warning
 uv run mypy                                     # --strict
 uv run ruff check python backend && uv run ruff format --check python backend
 
-python3 tools/mutation_test.py --jobs 4         # the suite must catch all 67 injected bugs
+python3 tools/mutation_test.py --jobs 4         # the suite must catch all 68 injected bugs
 
 cd frontend
 npm run lint && npm run typecheck && npm test   # ESLint, tsc (strict), Vitest

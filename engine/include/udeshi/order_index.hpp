@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -30,9 +31,9 @@ class OrderIndex {
   [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
   [[nodiscard]] std::size_t capacity() const noexcept { return slots_.size(); }
 
-  // The order with this id, or null.
+  // The order with this id, or null (always for id 0, which marks an empty slot).
   [[nodiscard]] Order* find(OrderId id) const noexcept {
-    if (slots_.empty()) {
+    if (slots_.empty() || id == kInvalidOrderId) {
       return nullptr;
     }
     for (std::size_t i = home(id);; i = next(i)) {
@@ -53,8 +54,9 @@ class OrderIndex {
     }
   }
 
-  // Adds an entry for an id that is not in the index. Call reserve_one() first.
+  // Adds an entry for an id that is not in the index and is not 0. Call reserve_one() first.
   void insert(OrderId id, Order* order) noexcept {
+    assert(id != kInvalidOrderId && size_ * 2 < slots_.size());
     std::size_t i = home(id);
     while (slots_[i].id != kInvalidOrderId) {
       i = next(i);
@@ -65,7 +67,7 @@ class OrderIndex {
 
   // Removes the entry for `id`; returns false if there is none.
   bool erase(OrderId id) noexcept {
-    if (slots_.empty()) {
+    if (slots_.empty() || id == kInvalidOrderId) {
       return false;
     }
     std::size_t hole = home(id);

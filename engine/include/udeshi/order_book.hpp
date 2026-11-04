@@ -119,7 +119,7 @@ class OrderBook {
   // ---- Mutation primitives (used by MatchingEngine) ----------------------------------------
   // Inserts a new resting order at the tail of its price level. Throws std::invalid_argument,
   // leaving the book unchanged, if the order would violate a book invariant: wrong instrument,
-  // duplicate id, quantity or price out of range, invalid side, or a sequence number not
+  // id 0 or a duplicate id, quantity or price out of range, invalid side, or a sequence number not
   // greater than that of the level's current tail (which would break time priority). Strong
   // exception guarantee. The argument must not refer to an order already removed from the book
   // (released nodes are poisoned under ASan); copy it before calling remove().
