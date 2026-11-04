@@ -23,13 +23,20 @@ from udeshi_markets.simulation import (
     deterministic_log,
 )
 
+# Prices computed in floating point can land a hair off an integer (10000 * 1.001 is
+# 10009.999999999998), and rounding that down would cost a whole tick. Values within this
+# tolerance of an integer are treated as that integer.
+_TICK_TOLERANCE = 1e-6
+
 
 def _ticks_up(value: float) -> int:
-    return max(1, math.ceil(value))
+    """The smallest whole tick at or above ``value`` (at least 1)."""
+    return max(1, math.ceil(value - _TICK_TOLERANCE))
 
 
 def _ticks_down(value: float) -> int:
-    return max(1, math.floor(value))
+    """The largest whole tick at or below ``value`` (at least 1)."""
+    return max(1, math.floor(value + _TICK_TOLERANCE))
 
 
 class RandomTrader(TradingAgent):
