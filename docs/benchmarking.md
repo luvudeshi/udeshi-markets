@@ -255,35 +255,39 @@ to the book's invariants, and these measurements do not yet justify it.
 
 ## Linux (GitHub-hosted runner)
 
+From the CI job of the final commit. Hosted runners are shared virtual machines, and their
+hardware varies between runs, so read these as a second platform's shape rather than a
+comparison with the M4.
+
 <!-- bench:linux:start -->
-Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz (2 logical CPUs), Linux 7.0.0-1017-azure x86_64, GCC 13.3.0, Release ( -O3 -DNDEBUG). Clock resolution 16 ns. Source: `bench/results/linux-ci.json`, from the CI job.
+AMD EPYC 7763 64-Core Processor (2 logical CPUs), Linux 7.0.0-1017-azure x86_64, GCC 13.3.0, Release ( -O3 -DNDEBUG). Clock: `std::chrono::steady_clock`: ticks of 1.00 ns; two consecutive reads at least 20 ns apart (median 30 ns). Source: `bench/results/linux-ci.json`, from the CI job.
 
 | Workload | M ops/s (min–max) | Mean ns | p50 | p99 | p99.9 | Max |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `book_size/1k` | 8.5 (7.1–8.5) | 118 | 145 | 243 | 305 | 41,227 |
-| `book_size/10k` | 12.4 (8.2–12.7) | 81 | 109 | 202 | 350 | 14,355 |
-| `book_size/100k` | 6.1 (6.0–6.4) | 164 | 214 | 601 | 758 | 50,430 |
-| `book_size/1M` | 4.9 (4.7–4.9) | 206 | 251 | 650 | 874 | 19,376 |
-| `price_levels/1` | 6.4 (6.2–6.6) | 156 | 193 | 582 | 723 | 16,026 |
-| `price_levels/10` | 7.4 (7.0–9.0) | 136 | 194 | 592 | 769 | 111,989 |
-| `price_levels/100` | 6.0 (5.8–6.3) | 165 | 199 | 587 | 736 | 57,542 |
-| `price_levels/1k` | 5.8 (5.7–6.2) | 171 | 224 | 626 | 824 | 27,364 |
-| `price_levels/10k` | 4.2 (4.1–4.3) | 239 | 317 | 821 | 1119 | 49,323 |
-| `patterns/passive` | 7.8 (7.7–8.0) | 128 | 141 | 473 | 575 | 3,272,778 |
-| `patterns/maker_taker` | 17.4 (17.1–17.6) | 58 | 75 | 195 | 413 | 16,538 |
-| `patterns/sweep_1` | 13.9 (13.8–13.9) | 72 | 63 | 416 | 455 | 7,377 |
-| `patterns/sweep_10` | 11.8 (11.5–11.8) | 85 | 64 | 1674 | 3970 | 16,845 |
-| `patterns/sweep_50` | 11.9 (11.8–12.0) | 84 | 64 | 155 | 16977 | 52,429 |
-| `patterns/mixed` | 12.9 (12.9–13.0) | 78 | 96 | 299 | 519 | 36,118 |
-| `cancel/random/100k` | 8.6 (7.7–9.5) | 116 | 237 | 658 | 871 | 17,803 |
-| `cancel/oldest_first/100k` | 11.9 (11.2–12.4) | 84 | 126 | 499 | 621 | 13,567 |
-| `cancel/newest_first/100k` | 12.5 (11.9–14.9) | 80 | 134 | 517 | 646 | 15,565 |
-| `cancel/random/1M` | 6.4 (4.9–6.4) | 157 | 262 | 656 | 829 | 42,844 |
-| `cancel/oldest_first/1M` | 9.7 (9.6–9.8) | 103 | 141 | 515 | 618 | 26,684 |
-| `cancel/newest_first/1M` | 9.7 (9.7–9.9) | 103 | 141 | 516 | 624 | 29,416 |
-| `cancel/missing` | 126.2 (123.7–126.7) | 8 | 30 | 128 | 427 | 16,044 |
-| `cancel/requote` | 24.9 (24.7–25.0) | 40 | 65 | 137 | 370 | 61,668 |
-| `exchange/mixed` | 11.8 (11.8–11.9) | 85 | 99 | 370 | 593 | 75,116 |
+| `book_size/1k` | 9.2 (6.4–9.3) | 108 | 131 | 221 | 290 | 39,073 |
+| `book_size/10k` | 11.9 (11.9–12.1) | 84 | 110 | 261 | 511 | 40,727 |
+| `book_size/100k` | 4.0 (3.8–4.3) | 253 | 261 | 611 | 932 | 47,269 |
+| `book_size/1M` | 3.2 (2.9–3.2) | 316 | 310 | 642 | 1032 | 26,159 |
+| `price_levels/1` | 5.6 (5.5–5.9) | 177 | 220 | 571 | 801 | 27,091 |
+| `price_levels/10` | 5.4 (5.2–5.9) | 185 | 221 | 571 | 822 | 39,905 |
+| `price_levels/100` | 4.3 (4.2–4.6) | 231 | 240 | 581 | 842 | 29,034 |
+| `price_levels/1k` | 3.8 (3.6–4.1) | 264 | 290 | 691 | 1072 | 28,884 |
+| `price_levels/10k` | 3.5 (3.4–3.6) | 285 | 311 | 741 | 1362 | 67,246 |
+| `patterns/passive` | 6.6 (6.4–6.6) | 152 | 170 | 441 | 561 | 2,626,777 |
+| `patterns/maker_taker` | 15.7 (15.4–15.8) | 64 | 80 | 180 | 251 | 20,859 |
+| `patterns/sweep_1` | 13.0 (13.0–13.2) | 77 | 60 | 441 | 491 | 13,105 |
+| `patterns/sweep_10` | 11.3 (11.2–11.4) | 88 | 70 | 431 | 4208 | 23,023 |
+| `patterns/sweep_50` | 11.3 (11.3–11.4) | 88 | 70 | 151 | 19156 | 51,386 |
+| `patterns/mixed` | 13.2 (13.2–13.2) | 76 | 90 | 270 | 461 | 91,102 |
+| `cancel/random/100k` | 6.2 (6.1–7.2) | 160 | 241 | 581 | 812 | 30,357 |
+| `cancel/oldest_first/100k` | 11.1 (10.8–12.6) | 90 | 160 | 451 | 581 | 19,888 |
+| `cancel/newest_first/100k` | 15.9 (12.0–16.8) | 63 | 80 | 420 | 581 | 21,661 |
+| `cancel/random/1M` | 5.2 (5.0–5.5) | 193 | 321 | 671 | 1052 | 59,832 |
+| `cancel/oldest_first/1M` | 8.8 (8.5–9.0) | 113 | 180 | 481 | 642 | 71,675 |
+| `cancel/newest_first/1M` | 8.9 (8.3–9.1) | 112 | 180 | 471 | 571 | 36,349 |
+| `cancel/missing` | 109.4 (107.5–110.1) | 9 | 40 | 60 | 110 | 23,474 |
+| `cancel/requote` | 24.8 (24.3–25.0) | 40 | 61 | 120 | 180 | 20,538 |
+| `exchange/mixed` | 12.2 (12.1–12.2) | 82 | 100 | 300 | 492 | 81,476 |
 <!-- bench:linux:end -->
 
 ## The Python simulation

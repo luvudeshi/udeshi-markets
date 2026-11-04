@@ -494,7 +494,8 @@ test, most in `e2e/regressions.spec.ts`):
   reported separately, because they answer different questions (memory-level parallelism in a
   stream).
 * **Report the instruments' limits.** The Apple clock's 41.67 ns tick is stated beside every
-  percentile, and the Linux runner's 16 ns clock gives a second view.
+  percentile. The Linux runner's clock ticks every nanosecond (reads 20–30 ns apart), which
+  gives a second view.
 * **Optimise only what the profile showed, and stop.** The next engine candidate, a flat
   price-level ladder, is documented with its evidence (throughput falls as levels thin out)
   but not built: a deeper change to the book's invariants than the gain justifies yet.
