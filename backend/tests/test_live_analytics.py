@@ -11,7 +11,7 @@ from apiclient import ONE_MARKET, action, create, get
 from fastapi.testclient import TestClient
 
 from udeshi_api.runner import LiveRunner
-from udeshi_api.sessions import LiveObserver, SessionManager
+from udeshi_api.sessions import SessionManager
 from udeshi_markets.agents import market_simulation
 from udeshi_markets.analytics import MarketObserver
 from udeshi_markets.simulation import SECOND, Simulation, SimulationConfig
@@ -107,13 +107,13 @@ def test_a_reset_starts_the_analytics_afresh(client: TestClient, manager: Sessio
     action(client, simulation_id, "start")
     run_for(client, simulation_id, 20)
     session = manager.get(simulation_id)
-    old = session.observer
-    assert isinstance(old, LiveObserver)
-    assert old.trades
+    observer = session.observer
+    assert isinstance(observer, MarketObserver)
+    assert observer.trades
     action(client, simulation_id, "reset")
-    assert session.observer is not old
-    assert old.active is False
-    assert old.trades == []  # Its data is let go of.
+    assert session.observer is observer  # The same observer, reset with the simulation...
+    assert observer.trades == []  # ...so nothing of the previous run remains.
+    assert session.simulation._observers == [observer]  # Exactly one is registered.
     analytics = get(client, f"/api/simulations/{simulation_id}/analytics")
     assert analytics["samples"] == 0
     assert all(m["volume"] == 0 for m in analytics["market"])

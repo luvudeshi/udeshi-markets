@@ -66,7 +66,6 @@ from udeshi_markets.simulation import (
     ChangeSet,
     EnvironmentConfig,
     MarketEnvironment,
-    OrderEvent,
     OrderIntent,
     Participant,
     Simulation,
@@ -106,26 +105,6 @@ _STATE_NAMES: dict[SimulationState, StateName] = {
     SimulationState.COMPLETED: "completed",
     SimulationState.FAILED: "failed",
 }
-
-
-class LiveObserver(MarketObserver):
-    """The analytics observer of a live session. A reset replaces it with a fresh one; the old
-    one is deactivated and let go of its data (the kernel keeps observers across resets)."""
-
-    active = True
-
-    def on_order(self, event: OrderEvent) -> None:
-        if self.active:
-            super().on_order(event)
-
-    def release(self) -> None:
-        self.active = False
-        self.trades = []
-        self.mid_after = {}
-        self.equity = {}
-        self.exposure = {}
-        self.series = []
-        self.times = []
 
 
 class LiveSession:
@@ -232,8 +211,9 @@ class LiveSession:
         return self.views.leaderboard()
 
     # ---- Analytics ---------------------------------------------------------------------------
-    def _new_observer(self) -> LiveObserver | None:
-        return LiveObserver(self._simulation) if self.has_market else None
+    def _new_observer(self) -> MarketObserver | None:
+        # One observer for the session's lifetime: the kernel resets it with the simulation.
+        return MarketObserver(self._simulation) if self.has_market else None
 
     def _sharpe(self, participant_id: int) -> float | None:
         observer = self.observer
@@ -300,10 +280,7 @@ class LiveSession:
 
     async def reset(self) -> None:
         await self.runner.stop()
-        self._simulation.reset()
-        if self.observer is not None:
-            self.observer.release()
-        self.observer = self._new_observer()
+        self._simulation.reset()  # Also resets the observer (SimulationObserver.on_reset).
         self.error = None
         # The previous state no longer applies (trade ids even restart at 1), so incremental
         # updates cannot express the change: every subscriber gets a fresh snapshot instead.
