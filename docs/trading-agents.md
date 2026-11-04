@@ -53,8 +53,10 @@ Agents read their own portfolio (`ctx.portfolio`, read-only) and cannot misrepor
   last trade, else the reference price. Unrealized P&L = Σ(q·mark − cost basis), so
   realized + unrealized = equity − initial cash.
 * **No credit checks.** As at an exchange (not a broker), cash may go negative and positions
-  may be short. Agents limit themselves with `max_position`. Their `room` check counts resting
-  orders that could still fill, so a limit holds even if every resting order fills.
+  may be short. Agents limit themselves with `max_position`. Their `room` check counts every
+  order that could still fill: resting orders (including those being cancelled) and orders
+  still on their way to the exchange. A limit therefore holds whatever the order latency; the
+  tests check every agent's position after every event at 10, 100 and 500 ms latency.
 
 ## The agent framework
 
@@ -106,16 +108,19 @@ attractive to buyers, so inventory is sold off, and its bid less attractive to s
 one raises both. This is a linear form of the Avellaneda–Stoikov reservation price.
 
 **Quotes.** Bid = ⌊r − h⌋ and ask = ⌈r + h⌉, with half-spread h = max(1 tick, `half_spread`·f).
-The side that would take |q| past Q is not quoted. All quotes are cancelled and replaced at
-every action.
+Quote sizes are capped by the room left under Q, so the side that would take |q| past Q is
+not quoted. At every action the quotes are cancelled and replaced. If earlier quotes or
+cancels are still on their way (with order latency), the market maker waits for them to land
+before requoting.
 
 **Measured.** All amounts are in currency, and all are causal:
 * **Spread earned:** for each passive fill at price p, (f − p)·qty on buys and (p − f)·qty on
   sells, with f the fair value when the fill happened.
-* **Adverse selection** (markout): τ = `markout_seconds` after each passive fill,
-  (p − mark_{t+τ})·qty on buys and (mark_{t+τ} − p)·qty on sells. Positive means the market
-  moved against the fill. It is the cost of trading with better-informed counterparties. The
-  measurement happens at t + τ, so it never feeds back into decisions taken at t.
+* **Adverse selection** (markout): exactly τ = `markout_seconds` after each passive fill (a
+  timer is set at the fill), (p − mark_{t+τ})·qty on buys and (mark_{t+τ} − p)·qty on sells.
+  Positive means the market moved against the fill. It is the cost of trading with
+  better-informed counterparties. The measurement happens at t + τ, so it never feeds back
+  into decisions taken at t.
 * **Inventory exposure** (|q|·mark) and **mark-to-market and realized P&L**, from the
   portfolio.
 
@@ -149,12 +154,17 @@ previous `window` values of s, **excluding the current one**, it computes
   z = (s − mean) / stdev
 
 using the population standard deviation. With fewer than `min_observations` values, or with
-zero variance, there is no signal; the zero-variance case is never divided by.
+zero variance, there is no signal; the zero-variance case is never divided by. The statistics
+are computed on deviations from the window's first value. Otherwise rounding in the mean of
+identical values leaves a spurious variance of about 1e-32, and a one-tick move would read as
+|z| ≈ 10¹².
 * **Entry, when flat:** z > `entry_z` sells the spread (sell leader, buy follower), and
   z < −`entry_z` buys it.
 * **Exit:** once |z| < `exit_z`, it unwinds both legs.
 * **Sizing:** the legs have equal currency value, `trade_size` leader shares against
-  round(`trade_size`·P_leader/P_follower) follower shares.
+  round(`trade_size`·P_leader/P_follower) follower shares. If either leg would exceed its
+  position limit, both shrink together, so the trade stays balanced; if no balanced trade
+  fits, there is none.
 
 ## Market dynamics
 
@@ -179,7 +189,10 @@ Linux and macOS in CI.
 
 ## Configuration
 
-* **`PopulationConfig`:** the number of agents per strategy, and `order_frequency`.
+* **`PopulationConfig`:** the number of agents per strategy, and `order_frequency`. Without
+  arguments, `market_simulation` uses the default population and `default_environment(config)`,
+  which pairs ACME with NOVA when both instruments exist (and leaves out pairs traders when
+  there is no pair).
 * **`EnvironmentConfig`:** volatility and regimes, news and shock rates and sizes, liquidity
   shocks, and pairs.
 * **`SimulationConfig`:** instruments, duration, seed, latency, bar width, and `initial_cash`

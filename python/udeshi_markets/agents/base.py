@@ -84,6 +84,10 @@ class TradingAgent(Participant):
         self.frequency = frequency
         self.max_position = max_position
         self.open_orders: dict[int, OpenOrder] = {}
+        # Orders sent but not yet reported on, oldest first. An agent's reports arrive in the
+        # order it sent its orders (one latency for all, FIFO among equal times).
+        self.in_flight: deque[OrderIntent] = deque()
+        self._cancelling: set[int] = set()  # Resting orders whose cancel is on its way.
         self.history: deque[OrderReport] = deque(maxlen=history_limit)
         self.stats = AgentStats()
 
@@ -108,6 +112,7 @@ class TradingAgent(Participant):
     # ---- Orders --------------------------------------------------------------------------------
     def submit(self, ctx: SimulationContext, intent: OrderIntent) -> None:
         ctx.submit(intent)
+        self.in_flight.append(intent)
         self.stats.orders_submitted += 1
 
     def limit(
@@ -129,8 +134,19 @@ class TradingAgent(Participant):
         self.submit(ctx, OrderIntent(instrument, side, quantity, order_type=OrderType.MARKET))
 
     def cancel(self, ctx: SimulationContext, order: OpenOrder) -> None:
+        if order.order_id in self._cancelling:
+            return  # Already on its way.
         ctx.cancel(order.instrument, order.order_id)
+        self._cancelling.add(order.order_id)
         self.stats.cancels_sent += 1
+
+    def busy(self, instrument: int) -> bool:
+        """Whether orders or cancels for ``instrument`` are still on their way."""
+        return any(intent.instrument == instrument for intent in self.in_flight) or any(
+            self.open_orders[order_id].instrument == instrument
+            for order_id in self._cancelling
+            if order_id in self.open_orders
+        )
 
     def cancel_all(self, ctx: SimulationContext, instrument: int | None = None) -> None:
         for order in list(self.open_orders.values()):
@@ -138,13 +154,18 @@ class TradingAgent(Participant):
                 self.cancel(ctx, order)
 
     def room(self, ctx: SimulationContext, instrument: int, side: Side) -> int:
-        """Shares that can still be bought (or sold) without the position, counting resting
-        orders that might fill, going beyond ``max_position``."""
+        """Shares that can still be bought (or sold) without the position going beyond
+        ``max_position``, even if every order that might still fill does: resting orders
+        (including those being cancelled) and orders not yet at the exchange."""
         position = ctx.portfolio.position(instrument)
         pending = sum(
             order.remaining
             for order in self.open_orders.values()
             if order.instrument == instrument and order.side is side
+        ) + sum(
+            intent.quantity
+            for intent in self.in_flight
+            if intent.instrument == instrument and intent.side is side
         )
         if side is Side.BUY:
             return max(0, self.max_position - position - pending)
@@ -152,6 +173,8 @@ class TradingAgent(Participant):
 
     # ---- Bookkeeping ---------------------------------------------------------------------------
     def on_order_report(self, ctx: SimulationContext, report: OrderReport) -> None:
+        if self.in_flight:
+            self.in_flight.popleft()
         self.history.append(report)
         if report.status is OrderStatus.REJECTED:
             self.stats.orders_rejected += 1
@@ -186,6 +209,7 @@ class TradingAgent(Participant):
                 del self.open_orders[fill.order_id]
 
     def on_cancel(self, ctx: SimulationContext, report: CancelReport) -> None:
+        self._cancelling.discard(report.order_id)  # Whatever the outcome, it has arrived.
         if report.status is CancelStatus.CANCELLED:
             self.open_orders.pop(report.order_id, None)
 

@@ -373,6 +373,106 @@ def test_agent_parameters_are_validated(factory: Any, message: str) -> None:
         factory()
 
 
+def test_room_counts_orders_still_on_their_way() -> None:
+    """With order latency, an agent can act again before its last order is reported. The
+    order in flight must count against the limit, or two actions size against the same room."""
+    fake = FakeContext({0: 10_000.0})
+    agent = MomentumTrader(2, [0], max_position=20)
+    agent.limit(as_ctx(fake), 0, Side.BUY, 15, 10_010, immediate=True)
+    assert agent.room(as_ctx(fake), 0, Side.BUY) == 5
+    assert agent.busy(0)
+    # Its report arrives (filled): the shares are now in the position, not in flight.
+    fake.portfolio.positions[0] = 15
+    agent.on_order_report(as_ctx(fake), _report(OrderIntent(0, Side.BUY, 15, price=10_010)))
+    assert agent.room(as_ctx(fake), 0, Side.BUY) == 5
+    assert not agent.busy(0)
+
+
+def _report(intent: OrderIntent, status: OrderStatus = OrderStatus.FILLED) -> OrderReport:
+    return OrderReport(
+        time=0,
+        intent=intent,
+        order_id=1,
+        status=status,
+        reject_reason=RejectReason.NONE,
+        cancel_reason=CancelReason.NONE,
+        filled_quantity=intent.quantity if status is OrderStatus.FILLED else 0,
+        resting_quantity=0,
+        cancelled_quantity=0,
+    )
+
+
+def test_a_market_maker_waits_for_its_last_quotes_before_requoting() -> None:
+    agent, fake = maker()
+    agent.act(as_ctx(fake), "act")
+    assert len(fake.take()) == 2
+    agent.act(as_ctx(fake), "act")  # Its quotes have not been reported yet.
+    assert fake.take() == []
+    assert fake.cancels == []
+
+
+def test_a_cancel_is_sent_once() -> None:
+    fake = FakeContext({0: 10_000.0})
+    agent = RandomTrader(5, [0])
+    resting(agent, fake, 7, OrderIntent(0, Side.BUY, 3, price=9_990))
+    agent.cancel_all(as_ctx(fake))
+    agent.cancel_all(as_ctx(fake))
+    assert fake.cancels == [(0, 7)]
+    assert agent.room(as_ctx(fake), 0, Side.BUY) == 200 - 3  # It could still fill.
+
+
+@pytest.mark.parametrize("latency_ms", [10, 100, 500])
+def test_position_limits_hold_at_every_event_whatever_the_latency(latency_ms: int) -> None:
+    config = SimulationConfig(
+        duration_ns=2 * MINUTE, seed=1, order_latency_ns=latency_ms * 1_000_000
+    )
+    sim = market_simulation(config)
+    sim.start()
+    agents = [p for p in sim.participants.values() if isinstance(p, TradingAgent)]
+    while sim.state.name == "RUNNING":
+        sim.step(1)
+        for agent in agents:
+            for instrument in agent.instruments:
+                position = sim.portfolio(agent.participant_id).position(instrument)
+                assert abs(position) <= agent.max_position, (agent.name, sim.now, position)
+
+
+def test_identical_spreads_give_no_signal_despite_rounding() -> None:
+    """The float mean of 21 copies of this spread is not exactly the spread itself, which used
+    to leave a variance of about 1e-32 and turn a one-tick move into |z| ~ 1e12."""
+    agent, _ = pair_trader(window=21, min_observations=21)
+    spread = deterministic_log(100.0) - deterministic_log(42.5)
+    agent.spreads.extend([spread] * 21)
+    assert agent._z_score(spread + 1e-4) is None
+
+
+def test_pairs_legs_shrink_together_when_one_is_capped() -> None:
+    fake = FakeContext({0: 5_000.0, 1: 1_000.0}, {0: 0.05, 1: 0.01})  # 250.00 and 10.00.
+    agent = PairsTrader(4, 0, 1, max_position=100, trade_size=10)
+    sizes = agent._leg_sizes(as_ctx(fake), Side.BUY, Side.SELL, 250.0, 10.0)
+    # 10 leader shares would need 250 follower shares; only 100 fit, so the leader leg is 4.
+    assert sizes == (4, 100)
+    fake.portfolio.positions[1] = -100  # No room at all on the follower: no trade.
+    assert agent._leg_sizes(as_ctx(fake), Side.BUY, Side.SELL, 250.0, 10.0) is None
+
+
+def test_markouts_are_taken_exactly_at_the_horizon() -> None:
+    agent, fake = maker(markout_seconds=5.0)
+    agent.on_fill(as_ctx(fake), Fill(1, 0, 0, 77, Side.BUY, 9995, 10, is_aggressor=False))
+    assert fake.wakeups[-1] == (5 * SECOND, "markout")
+    fake.now = 5 * SECOND
+    fake.marks[0] = 9_990.0
+    agent.on_wakeup(as_ctx(fake), "markout")
+    assert agent.markouts_measured == 1
+    assert agent.adverse_selection == pytest.approx(5 * 10 * 0.01)
+    assert fake.take() == []  # A measurement only: no requote.
+
+
+def test_the_default_market_needs_no_configuration() -> None:
+    summary = market_simulation(SimulationConfig(duration_ns=MINUTE)).run()
+    assert summary.trades > 0
+
+
 # ---- Whole markets ---------------------------------------------------------------------------
 
 
@@ -474,6 +574,6 @@ def test_market_orders_and_instrument_bounds_from_agents_are_valid() -> None:
 
 # A five-minute, 26-agent market. Strategies use only exactly rounded arithmetic (and the
 # deterministic log and exp), so these hold on every platform; CI checks Linux and macOS.
-GOLDEN_TRADES = 2424
-GOLDEN_VOLUME = 16992
-GOLDEN_DIGEST = "b2811abc66b303f7e96ac799257b9164"
+GOLDEN_TRADES = 2450
+GOLDEN_VOLUME = 17305
+GOLDEN_DIGEST = "86c900244a093ddb5e457885c4a62e7e"

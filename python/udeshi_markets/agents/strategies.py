@@ -165,10 +165,18 @@ class MarketMaker(TradingAgent):
             self._last_trade_seen[instrument] = 0
         super().on_start(ctx)
 
+    def on_wakeup(self, ctx: SimulationContext, tag: str) -> None:
+        if tag == "markout":  # Measurement only: no requoting.
+            self._measure_markouts(ctx)
+            return
+        super().on_wakeup(ctx, tag)
+
     def act(self, ctx: SimulationContext, tag: str) -> None:
         self._measure_markouts(ctx)
         for instrument in self.instruments:
             self._update_fair(ctx, instrument)
+            if self.busy(instrument):
+                continue  # Quotes or cancels still on their way: requote once they land.
             self.cancel_all(ctx, instrument)
             self._quote(ctx, instrument)
 
@@ -187,9 +195,10 @@ class MarketMaker(TradingAgent):
         half = max(1.0, self.half_spread * fair)
         bid = _ticks_down(reservation - half)
         ask = max(bid + 1, _ticks_up(reservation + half))
-        # The resting quotes are being replaced, so room is measured from the position alone.
-        bid_size = min(self.quote_size, self.max_position - position)
-        ask_size = min(self.quote_size, self.max_position + position)
+        # The quotes being cancelled still count against the limit until their cancels land
+        # (they could fill first), so the limit holds whatever the order latency.
+        bid_size = min(self.quote_size, self.room(ctx, instrument, Side.BUY))
+        ask_size = min(self.quote_size, self.room(ctx, instrument, Side.SELL))
         if bid_size > 0:
             self.limit(ctx, instrument, Side.BUY, bid_size, bid)
         if ask_size > 0:
@@ -206,6 +215,7 @@ class MarketMaker(TradingAgent):
         self._markouts.append(
             (fill.time, fill.instrument, fill.side, fill.price, fill.quantity, tick)
         )
+        ctx.wakeup(round(self.markout_ns), "markout")  # Measured exactly at the horizon.
 
     def _measure_markouts(self, ctx: SimulationContext) -> None:
         while self._markouts and ctx.now - self._markouts[0][0] >= self.markout_ns:
@@ -436,13 +446,14 @@ class PairsTrader(TradingAgent):
         leader_position = ctx.portfolio.position(self.leader)
         follower_position = ctx.portfolio.position(self.follower)
         flat = leader_position == 0 and follower_position == 0
-        follower_size = max(1, round(self.trade_size * leader_value / follower_value))
-        if flat and self.z > self.entry_z:
-            self._leg(ctx, self.leader, Side.SELL, self.trade_size, leader_mark)
-            self._leg(ctx, self.follower, Side.BUY, follower_size, follower_mark)
-        elif flat and self.z < -self.entry_z:
-            self._leg(ctx, self.leader, Side.BUY, self.trade_size, leader_mark)
-            self._leg(ctx, self.follower, Side.SELL, follower_size, follower_mark)
+        if flat and abs(self.z) > self.entry_z:
+            # z > entry: the spread is wide, so sell the leader and buy the follower.
+            leader_side = Side.SELL if self.z > 0 else Side.BUY
+            follower_side = Side.BUY if self.z > 0 else Side.SELL
+            sizes = self._leg_sizes(ctx, leader_side, follower_side, leader_value, follower_value)
+            if sizes is not None:
+                self._leg(ctx, self.leader, leader_side, sizes[0], leader_mark)
+                self._leg(ctx, self.follower, follower_side, sizes[1], follower_mark)
         elif not flat and abs(self.z) < self.exit_z:
             for instrument, position, mark in (
                 (self.leader, leader_position, leader_mark),
@@ -456,11 +467,37 @@ class PairsTrader(TradingAgent):
         count = len(self.spreads)
         if count < self.min_observations:
             return None
-        mean = sum(self.spreads) / count
-        variance = sum((s - mean) ** 2 for s in self.spreads) / count
+        if max(self.spreads) == min(self.spreads):
+            return None  # Zero variance: no signal (and nothing to divide by).
+        # Deviations from the first value: the mean of identical floats is not always exactly
+        # that float, and the rounding error would show up as a tiny, spurious variance.
+        origin = self.spreads[0]
+        deviations = [s - origin for s in self.spreads]
+        mean = sum(deviations) / count
+        variance = sum((d - mean) ** 2 for d in deviations) / count
         if variance <= 0.0:
             return None
-        return (spread - mean) / math.sqrt(variance)
+        return (spread - origin - mean) / math.sqrt(variance)
+
+    def _leg_sizes(
+        self,
+        ctx: SimulationContext,
+        leader_side: Side,
+        follower_side: Side,
+        leader_value: float,
+        follower_value: float,
+    ) -> tuple[int, int] | None:
+        """Leg sizes of equal currency value, both within the position limits: if either leg
+        is capped, both shrink together. None if no balanced trade fits."""
+        leader_room = self.room(ctx, self.leader, leader_side)
+        follower_room = self.room(ctx, self.follower, follower_side)
+        leader = min(
+            self.trade_size, leader_room, math.floor(follower_room * follower_value / leader_value)
+        )
+        if leader <= 0:
+            return None
+        follower = min(follower_room, max(1, round(leader * leader_value / follower_value)))
+        return leader, follower
 
     def _leg(
         self, ctx: SimulationContext, instrument: int, side: Side, quantity: int, mark: float

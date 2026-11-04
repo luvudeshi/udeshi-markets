@@ -5,6 +5,7 @@ from udeshi_markets.agents.population import (
     MAX_AGENTS,
     PopulationConfig,
     build_agents,
+    default_environment,
     market_simulation,
 )
 from udeshi_markets.agents.strategies import (
@@ -37,5 +38,6 @@ __all__ = [
     "RandomTrader",
     "TradingAgent",
     "build_agents",
+    "default_environment",
     "market_simulation",
 ]

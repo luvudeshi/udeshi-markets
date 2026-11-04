@@ -97,6 +97,13 @@ def build_agents(
     return agents
 
 
+def default_environment(config: SimulationConfig) -> EnvironmentConfig:
+    """The default environment, with ACME and NOVA as a cointegrated pair when both exist."""
+    symbols = set(config.symbols)
+    pairs = (PairConfig("ACME", "NOVA"),) if {"ACME", "NOVA"} <= symbols else ()
+    return EnvironmentConfig(pairs=pairs)
+
+
 def market_simulation(
     config: SimulationConfig,
     population: PopulationConfig | None = None,
@@ -107,8 +114,10 @@ def market_simulation(
 ) -> Simulation:
     """A simulation of agents trading in a market environment (both rebuilt on every reset).
     ``extra`` adds further participants, such as the API's manual trader."""
-    population = population or PopulationConfig()
-    environment = environment or EnvironmentConfig()
+    if environment is None:
+        environment = default_environment(config)
+    if population is None:
+        population = PopulationConfig(pairs_traders=1 if environment.pairs else 0)
 
     def participants() -> list[Participant]:
         built: list[Participant] = list(build_agents(config, population, environment.pairs))

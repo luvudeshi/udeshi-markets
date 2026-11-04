@@ -124,8 +124,9 @@ class Portfolio:
     def realized_pnl(self) -> Fraction:
         return sum((p.realized for p in self._positions), Fraction(0))
 
-    def unrealized_pnl(self, marks: Sequence[int]) -> Fraction:
-        """Open positions valued at ``marks`` (ticks, one per instrument) less their cost."""
+    def unrealized_pnl(self, marks: Sequence[int | Fraction]) -> Fraction:
+        """Open positions valued at ``marks`` (ticks, one per instrument; a midprice can be a
+        half tick, so marks may be fractions) less their cost."""
         return sum(
             (
                 self._ticks[i] * marks[i] * p.quantity - p.cost
@@ -135,19 +136,19 @@ class Portfolio:
             Fraction(0),
         )
 
-    def market_value(self, marks: Sequence[int]) -> Fraction:
+    def market_value(self, marks: Sequence[int | Fraction]) -> Fraction:
         return sum(
             (self._ticks[i] * marks[i] * p.quantity for i, p in enumerate(self._positions)),
             Fraction(0),
         )
 
-    def equity(self, marks: Sequence[int]) -> Fraction:
+    def equity(self, marks: Sequence[int | Fraction]) -> Fraction:
         return self._cash + self.market_value(marks)
 
-    def total_pnl(self, marks: Sequence[int]) -> Fraction:
+    def total_pnl(self, marks: Sequence[int | Fraction]) -> Fraction:
         return self.equity(marks) - self._initial_cash
 
-    def gross_exposure(self, marks: Sequence[int]) -> Fraction:
+    def gross_exposure(self, marks: Sequence[int | Fraction]) -> Fraction:
         """Sum of |position| * mark: the capital at risk in open positions."""
         return sum(
             (self._ticks[i] * marks[i] * abs(p.quantity) for i, p in enumerate(self._positions)),
@@ -183,11 +184,11 @@ class PortfolioView:
     def realized_pnl(self) -> Fraction:
         return self._portfolio.realized_pnl()
 
-    def unrealized_pnl(self, marks: Sequence[int]) -> Fraction:
+    def unrealized_pnl(self, marks: Sequence[int | Fraction]) -> Fraction:
         return self._portfolio.unrealized_pnl(marks)
 
-    def equity(self, marks: Sequence[int]) -> Fraction:
+    def equity(self, marks: Sequence[int | Fraction]) -> Fraction:
         return self._portfolio.equity(marks)
 
-    def total_pnl(self, marks: Sequence[int]) -> Fraction:
+    def total_pnl(self, marks: Sequence[int | Fraction]) -> Fraction:
         return self._portfolio.total_pnl(marks)
