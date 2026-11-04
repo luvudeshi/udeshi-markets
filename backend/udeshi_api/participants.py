@@ -9,8 +9,9 @@ reference price.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from fractions import Fraction
+from typing import Literal
 
 from udeshi_api.errors import not_found
 from udeshi_api.manual import ManualTrader
@@ -66,12 +67,23 @@ def strategy_name(participant: Participant) -> StrategyName:
     raise TypeError(f"no API strategy name for {type(participant).__name__}")
 
 
+_SENTIMENTS: dict[int, Literal["positive", "negative", "neutral"]] = {
+    1: "positive",
+    -1: "negative",
+    0: "neutral",  # News that moved nothing.
+}
+
+
+def _rounded(value: float | None) -> float | None:
+    return None if value is None else round(value, 6)
+
+
 def news_out(news: News, symbols: Sequence[str]) -> NewsOut:
     return NewsOut(
         time_seconds=to_seconds(news.time),
         symbol=symbols[news.instrument],
         impact=round(news.impact, 8),
-        sentiment="positive" if news.sentiment > 0 else "negative",
+        sentiment=_SENTIMENTS[news.sentiment],
         headline=news.headline,
     )
 
@@ -79,8 +91,17 @@ def news_out(news: News, symbols: Sequence[str]) -> NewsOut:
 class ParticipantViews:
     """Builds the API's view of one simulation's participants."""
 
-    def __init__(self, simulation: Simulation, formats: Sequence[PriceFormat]) -> None:
+    def __init__(
+        self,
+        simulation: Simulation,
+        formats: Sequence[PriceFormat],
+        *,
+        sharpe: Callable[[int], float | None] | None = None,
+    ) -> None:
+        """``sharpe`` gives a participant's Sharpe ratio from the session's analytics (None:
+        not measured)."""
         self._simulation = simulation
+        self._sharpe = sharpe
         self._formats = tuple(formats)
         self._ticks = tuple(exact_tick(fmt.tick_size) for fmt in self._formats)
         # Cash moves in multiples of a tick's value, so the finest tick's decimal places (plus
@@ -140,6 +161,7 @@ class ParticipantViews:
             "realized_pnl": self._money(portfolio.realized_pnl()),
             "unrealized_pnl": self._money(unrealized),
             "return_pct": None if initial == 0 else round(float(total / initial * 100), 6),
+            "sharpe_ratio": None if self._sharpe is None else _rounded(self._sharpe(pid)),
             "positions": {
                 symbols[i]: details[i].quantity for i in self._held(participant, details)
             },

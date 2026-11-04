@@ -1,7 +1,22 @@
-# Local stack. Phase 2 runs the API; the frontend (Phase 5) and PostgreSQL (Phase 4, for
-# experiment results) join here when they exist.
+# Local stack: the API and PostgreSQL (experiment results). The frontend (Phase 5) joins here.
 #   docker compose up --build    then open http://localhost:8000/docs
+# The database credentials are for this local stack only.
 services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: udeshi
+      POSTGRES_PASSWORD: udeshi
+      POSTGRES_DB: udeshi
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U udeshi -d udeshi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -12,4 +27,11 @@ services:
     environment:
       UDESHI_CORS_ORIGINS: "http://localhost:3000"
       UDESHI_LOG_LEVEL: "info"
+      UDESHI_DATABASE_URL: "postgresql+psycopg://udeshi:udeshi@db:5432/udeshi"
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  pgdata:

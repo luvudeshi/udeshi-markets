@@ -303,6 +303,11 @@ class AgentOut(_Model):
     realized_pnl: float = Field(description="Average-cost P&L of closed positions.")
     unrealized_pnl: float = Field(description="Open positions at the marks, less their cost.")
     return_pct: float | None = Field(description="total_pnl / initial_cash * 100.")
+    sharpe_ratio: float | None = Field(
+        default=None,
+        description="Per hour, of equity returns between analytics samples (live markets "
+        "only). None until there are two returns, or with zero variance.",
+    )
     positions: dict[str, int] = Field(description="Shares per symbol (negative: short).")
     trades: int = Field(description="Executions booked to its portfolio.")
     orders_submitted: int
@@ -361,5 +366,5 @@ class NewsOut(_Model):
     time_seconds: float
     symbol: str
     impact: float = Field(description="Change in the log fundamental value.")
-    sentiment: Literal["positive", "negative"]
+    sentiment: Literal["positive", "negative", "neutral"]
     headline: str

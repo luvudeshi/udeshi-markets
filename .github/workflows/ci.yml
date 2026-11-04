@@ -68,6 +68,40 @@ jobs:
       - name: Test
         run: uv run --frozen pytest
 
+  postgres:
+    # The storage layer and the experiments API against a real PostgreSQL (service containers
+    # need a Linux runner, so this is its own job; the python job runs them on SQLite).
+    name: postgres
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: udeshi
+          POSTGRES_PASSWORD: udeshi
+          POSTGRES_DB: udeshi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U udeshi -d udeshi_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      UDESHI_TEST_DATABASE_URL: postgresql+psycopg://udeshi:udeshi@localhost:5432/udeshi_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.5"
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build extension and install packages
+        run: uv sync --all-packages --locked --python 3.12
+      - name: Storage and experiments on PostgreSQL
+        run: uv run --frozen pytest backend/tests/test_storage.py backend/tests/test_experiments_api.py -v
+
   wheel:
     # The python job tests an editable install, which reads the package from the source tree.
     # This builds the real wheel, with the bindings compiled under -Werror, and tests it as
