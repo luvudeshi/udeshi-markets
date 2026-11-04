@@ -102,7 +102,10 @@ def run_once(spec: ExperimentSpec, seed: int) -> RunResult:
         spec.simulation_config(seed), spec.population, spec.environment_config()
     )
     observer = MarketObserver(
-        simulation, interval_ns=spec.sample_interval_ns, markout_ns=spec.markout_ns
+        simulation,
+        interval_ns=spec.sample_interval_ns,
+        markout_ns=spec.markout_ns,
+        record=False,  # The metrics need only the running aggregates.
     )
     run_observed(simulation, observer)
     analytics = analyze(observer)

@@ -9,6 +9,23 @@ services:
     branch: main
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
+    # Only changes to what the image is built from redeploy it (each redeploy also restarts the
+    # service and loses its in-memory simulations): not the frontend, docs, tools or tests.
+    buildFilter:
+      paths:
+        - backend/**
+        - engine/**
+        - python/**
+        - pyproject.toml
+        - uv.lock
+        - CMakeLists.txt
+        - CMakePresets.json
+        - render.yaml
+      ignoredPaths:
+        - "**/*.md"
+        - backend/tests/**
+        - engine/tests/**
+        - python/tests/**
     healthCheckPath: /api/health
     envVars:
       # The image listens on 8000 (UDESHI_PORT); Render routes traffic to PORT.
@@ -22,3 +39,8 @@ services:
         value: "4"
       - key: UDESHI_EXPERIMENT_WORKERS
         value: "1"
+      # Bars a live simulation may keep (about 180 bytes each): five symbols' 1-second bars
+      # for 5.5 simulated hours, or a day at 5-second bars. The default, 500,000, lets four
+      # simulations hold most of the 512 MB.
+      - key: UDESHI_MAX_BARS
+        value: "100000"

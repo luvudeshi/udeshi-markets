@@ -8,7 +8,8 @@ import io
 
 import pytest
 
-from udeshi_markets.agents import PopulationConfig
+from udeshi_markets.agents import PopulationConfig, market_simulation
+from udeshi_markets.analytics import MarketObserver, analyze, run_observed
 from udeshi_markets.experiments import (
     ExperimentSpec,
     compare,
@@ -21,6 +22,8 @@ from udeshi_markets.experiments import (
     write_runs_csv,
     write_summary_csv,
 )
+from udeshi_markets.experiments.runner import flatten, run_once
+from udeshi_markets.experiments.spec import RUN_TRADE_HISTORY
 from udeshi_markets.simulation import MINUTE, EnvironmentConfig, PairConfig
 
 SMALL = PopulationConfig(
@@ -84,6 +87,29 @@ def test_runs_are_ordered_reproducible_and_independent_of_parallelism() -> None:
     for name in ("spread_bps", "effective_spread_bps", "volatility_per_hour", "market_maker.pnl"):
         assert metrics[name] is not None
     assert "environment.pnl" not in metrics
+
+
+def test_a_run_keeps_little_and_reports_what_a_full_record_would() -> None:
+    """A run keeps one bar per instrument, a short tape and no observer record, so its memory
+    does not grow with its length; its digest and metrics are those of the same market with
+    the full recorder and record."""
+    experiment = spec(duration_ns=3 * MINUTE, population=PopulationConfig())
+    config = experiment.simulation_config(5)
+    assert config.bar_interval_ns == config.duration_ns
+    assert config.trade_history_limit == RUN_TRADE_HISTORY
+    run = run_once(experiment, 5)
+    full = market_simulation(
+        dataclasses.replace(config, bar_interval_ns=1_000_000_000, trade_history_limit=None),
+        experiment.population,
+        experiment.environment_config(),
+    )
+    observer = MarketObserver(
+        full, interval_ns=experiment.sample_interval_ns, markout_ns=experiment.markout_ns
+    )
+    run_observed(full, observer)
+    assert run.digest == full.digest
+    assert run.metrics == flatten(analyze(observer))
+    assert len(full.recorder.bars(0)) > 100  # Not vacuous: the full recorder kept far more.
 
 
 def test_summaries_and_monte_carlo() -> None:

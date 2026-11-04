@@ -109,10 +109,15 @@ def test_a_reset_starts_the_analytics_afresh(client: TestClient, manager: Sessio
     session = manager.get(simulation_id)
     observer = session.observer
     assert isinstance(observer, MarketObserver)
-    assert observer.trades
+    assert not observer.record  # Aggregates only: a long live run does not grow it.
+    assert observer.samples
+    assert observer.aggregates[0].trades
+    assert not observer.times
+    assert not observer.trades
     action(client, simulation_id, "reset")
     assert session.observer is observer  # The same observer, reset with the simulation...
-    assert observer.trades == []  # ...so nothing of the previous run remains.
+    assert observer.samples == 0  # ...so nothing of the previous run remains.
+    assert all(a.trades == 0 for a in observer.aggregates)
     # Exactly one of each is registered: the counterparty ledger and the analytics.
     assert session.simulation._observers == [session.counterparties, observer]
     analytics = get(client, f"/api/simulations/{simulation_id}/analytics")

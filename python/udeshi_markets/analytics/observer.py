@@ -21,7 +21,9 @@ each measurement taken at the first tick at or after its time.
 Besides the record, the observer keeps running aggregates of everything the metrics need
 (running.py), updated as each observation arrives. Computing the metrics then takes time that
 does not grow with the length of the run, which matters to a live market asked for its
-analytics again and again.
+analytics again and again. The metrics read only the aggregates, so an observer made with
+``record=False`` keeps no record at all: its memory then does not grow with the length of the
+run either (a live session's observer, kept for hours of simulated time, is one).
 """
 
 from __future__ import annotations
@@ -111,6 +113,7 @@ class MarketObserver(SimulationObserver):
         interval_ns: int = SECOND,
         markout_ns: int = 5 * SECOND,
         depth_levels: int = 5,
+        record: bool = True,
     ) -> None:
         if interval_ns <= 0 or markout_ns <= 0 or depth_levels <= 0:
             raise ValueError("interval, markout horizon and depth levels must be positive")
@@ -118,6 +121,7 @@ class MarketObserver(SimulationObserver):
         self.interval_ns = interval_ns
         self.markout_ns = markout_ns
         self.depth_levels = depth_levels
+        self.record = record  # Keep the record (times, series, trades) besides the aggregates.
         self._initialize()
         simulation.add_observer(self)
 
@@ -132,7 +136,10 @@ class MarketObserver(SimulationObserver):
         self.mid_after: dict[int, Fraction | None] = {}  # Trade index -> mid at t + horizon.
         self.submitted: list[int] = [0] * count  # Shares in accepted orders, per instrument.
         self.submitted_by: dict[int, int] = dict.fromkeys(simulation.participants, 0)
-        self._pending: deque[tuple[int, int]] = deque()  # (due time, trade index), in order.
+        # (due time, trade, its index in the record if recorded), in order.
+        self._pending: deque[tuple[int, TradeRecord, int | None]] = deque()
+        self._samples = 0
+        self._last_sample: int | None = None
         self._next_sample = simulation.now  # Observation starts now, even mid-run.
         self._ticks = [simulation.exchange.instrument(i).tick_size for i in range(count)]
         self.aggregates = [InstrumentAggregates() for _ in range(count)]
@@ -164,8 +171,11 @@ class MarketObserver(SimulationObserver):
                 trade.buyer,
                 trade.seller,
             )
-            self.trades.append(record)
-            self._pending.append((trade.timestamp + self.markout_ns, len(self.trades) - 1))
+            index = None
+            if self.record:
+                index = len(self.trades)
+                self.trades.append(record)
+            self._pending.append((trade.timestamp + self.markout_ns, record, index))
             aggregates = self.aggregates[record.instrument]
             aggregates.trades += 1
             aggregates.volume += record.quantity
@@ -183,10 +193,10 @@ class MarketObserver(SimulationObserver):
         """Records whatever is due at the simulation's current time."""
         now = self.simulation.now
         while self._pending and self._pending[0][0] <= now:
-            _, index = self._pending.popleft()
-            trade = self.trades[index]
+            _, trade, index = self._pending.popleft()
             after = self._mid(trade.instrument)
-            self.mid_after[index] = after
+            if index is not None:
+                self.mid_after[index] = after
             if trade.mid_before is not None and after is not None:
                 self._measure(trade, trade.mid_before, after)
         if now >= self._next_sample:
@@ -216,7 +226,10 @@ class MarketObserver(SimulationObserver):
         simulation = self.simulation
         exchange = simulation.exchange
         environment = simulation.environment
-        self.times.append(now)
+        self._samples += 1
+        self._last_sample = now
+        if self.record:
+            self.times.append(now)
         marks = [float(mark) for mark in simulation.marks()]
         for i, series in enumerate(self.series):
             bid, ask = exchange.best_bid(i), exchange.best_ask(i)
@@ -226,11 +239,12 @@ class MarketObserver(SimulationObserver):
             bid_depth = sum(level.quantity for level in book.bids)
             ask_depth = sum(level.quantity for level in book.asks)
             fundamental = None if environment is None else environment.fundamental(i)
-            series.mids.append(mid)
-            series.spreads.append(spread)
-            series.bid_depth.append(bid_depth)
-            series.ask_depth.append(ask_depth)
-            series.fundamentals.append(fundamental)
+            if self.record:
+                series.mids.append(mid)
+                series.spreads.append(spread)
+                series.bid_depth.append(bid_depth)
+                series.ask_depth.append(ask_depth)
+                series.fundamentals.append(fundamental)
             self._aggregate_sample(i, mid, spread, bid_depth, ask_depth, fundamental)
         for pid in self.equity:
             portfolio = simulation.portfolio(pid)
@@ -243,8 +257,9 @@ class MarketObserver(SimulationObserver):
                     value += worth
                     exposure += abs(worth)
             equity = float(portfolio.cash) + value
-            self.equity[pid].append(equity)
-            self.exposure[pid].append(exposure)
+            if self.record:
+                self.equity[pid].append(equity)
+                self.exposure[pid].append(exposure)
             aggregates = self.participant_aggregates[pid]
             aggregates.sharpe.add(equity)
             aggregates.drawdown.add(equity)
@@ -281,7 +296,7 @@ class MarketObserver(SimulationObserver):
 
     @property
     def samples(self) -> int:
-        return len(self.times)
+        return self._samples
 
     def sharpe_ratio(self, participant_id: int) -> float | None:
         """Per hour, of the participant's equity returns between samples (None if it is not
@@ -293,7 +308,7 @@ class MarketObserver(SimulationObserver):
         """Takes a last sample at the current time if the latest one is older, so equity-based
         metrics end on the final state of the run."""
         self.observe()
-        if not self.times or self.times[-1] < self.simulation.now:
+        if self._last_sample is None or self._last_sample < self.simulation.now:
             self._sample(self.simulation.now)
 
     @property

@@ -314,6 +314,31 @@ def test_a_live_observer_reports_the_same_mid_run_as_the_batch() -> None:
             )
 
 
+@pytest.mark.parametrize("seed", [2, 9])
+def test_an_observer_without_a_record_reports_the_same_and_keeps_nothing(seed: int) -> None:
+    """The metrics come from the running aggregates alone, so dropping the record (as a live
+    session and an experiment run do, to keep memory flat) changes none of them."""
+    observers = []
+    for record in (True, False):
+        simulation = market_simulation(SimulationConfig(duration_ns=3 * MINUTE, seed=seed))
+        observer = MarketObserver(simulation, record=record)
+        run_observed(simulation, observer)
+        observers.append(observer)
+    recorded, unrecorded = observers
+    assert analyze(unrecorded) == analyze(recorded)
+    assert unrecorded.samples == recorded.samples == len(recorded.times) > 100
+    assert recorded.trades
+    assert recorded.mid_after
+    assert not unrecorded.times
+    assert not unrecorded.trades
+    assert not unrecorded.mid_after
+    assert all(not series.mids and not series.bid_depth for series in unrecorded.series)
+    assert all(not values for values in unrecorded.equity.values())
+    # Markouts are released as they fall due: only the run's last few seconds still wait.
+    end = unrecorded.simulation.now
+    assert all(end < due <= end + unrecorded.markout_ns for due, _, _ in unrecorded._pending)
+
+
 def test_running_mean_refuses_to_mix_ints_and_floats() -> None:
     """A mix would be averaged differently from ``stats.mean``: refused, not silently wrong.
     Each case mixes only at its last value."""

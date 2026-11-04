@@ -19,6 +19,9 @@ from udeshi_markets.simulation import (
 )
 
 MAX_RUNS = 10_000
+# Trades of each instrument a run's tape keeps: more than agents read of it (50 at most). A run
+# is reduced to its metrics, which come from the observer, so it keeps no longer history.
+RUN_TRADE_HISTORY = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +75,10 @@ class ExperimentSpec:
             seed=seed,
             order_latency_ns=self.order_latency_ns,
             initial_cash=self.initial_cash,
+            # One bar per instrument and a short tape, so a day-long run's memory does not grow
+            # with its trades. Agents read only the tape's last 50 trades; nothing reads bars.
+            bar_interval_ns=self.duration_ns,
+            trade_history_limit=RUN_TRADE_HISTORY,
         )
 
     def environment_config(self) -> EnvironmentConfig:

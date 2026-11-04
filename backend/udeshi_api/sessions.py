@@ -226,8 +226,9 @@ class LiveSession:
 
     # ---- Analytics ---------------------------------------------------------------------------
     def _new_observer(self) -> MarketObserver | None:
-        # One observer for the session's lifetime: the kernel resets it with the simulation.
-        return MarketObserver(self._simulation) if self.has_market else None
+        # One observer for the session's lifetime: the kernel resets it with the simulation. It
+        # keeps only running aggregates, so a long run does not grow it (512 MB instances).
+        return MarketObserver(self._simulation, record=False) if self.has_market else None
 
     def _sharpe(self, participant_id: int) -> float | None:
         # Kept up to date by the observer as samples arrive: the leaderboard's cost does not
@@ -249,7 +250,7 @@ class LiveSession:
             time_seconds=to_seconds(self._simulation.now),
             interval_seconds=to_seconds(observer.interval_ns),
             markout_seconds=to_seconds(observer.markout_ns),
-            samples=len(observer.times),
+            samples=observer.samples,
             market=list(result.market),
             microstructure=list(result.microstructure),
             agents=list(result.agents),
