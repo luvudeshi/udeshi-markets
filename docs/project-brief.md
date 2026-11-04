@@ -622,4 +622,27 @@ Build this in a new private github repo and push/commit very frequently as you a
 
 ---
 
-Follow-up instruction (Phase 2 kickoff): "Start Phase 2".
+## Follow-up instructions
+
+The user's later messages, verbatim, in order:
+
+1. "Start Phase 2"
+2. "save the original instructions i had promtped into a file and then run / compact to free up
+   my context, ensuring i dont lose any info tho"
+3. "expedite this please youre going super slow for nothing" (during the Phase 2 review)
+4. "estimate how long till this finishes"
+5. "i toguth you had finished phase 2"
+6. "speed it up, try to get it done in thirty minutes"
+7. "Start Phase 3"
+8. "Start Phase 4"
+9. "Before we start phase 5, do the thing where you compile all the information so far and
+   save it all and whatnot so that i can use / compact afterward without you losing anything."
+
+What these add to the brief:
+* **Speed matters.** The user does not want to wait on long background reviews. Fix findings as
+  they arrive, run disjoint work in parallel, and keep reviews short and focused, without
+  lowering the bar: tests for every fix, CI green on Linux and macOS.
+* **Each phase starts only on the user's word.** End each phase with the report the brief asks
+  for, then ask before starting the next.
+* **Before a compaction**, save the state: this file, development-log.md, the local
+  `.claude/handoff.md` and the memory notes.

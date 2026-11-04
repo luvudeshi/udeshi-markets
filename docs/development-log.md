@@ -327,6 +327,33 @@ Integration also removed an observer leak: each live reset left one more observe
 * Live analytics read horizons at tick granularity.
 * p-values from a handful of runs assume roughly normal sample means.
 
+## Next: Phase 5 (frontend)
+
+Not started; waiting for the user's go-ahead. Scope (brief §10, lines 343–429 of
+[project-brief.md](project-brief.md)): a Next.js + TypeScript + Tailwind trading terminal with:
+* a market overview;
+* a live order book with a depth visualisation;
+* price charts with news markers;
+* a trade tape;
+* a sortable agent leaderboard;
+* simulation controls;
+* an experiment dashboard (create, run, compare, distributions);
+* Playwright tests of the important interactions.
+
+Design: dark, dense, subtle borders, professional charts, nothing that looks like a generic
+dashboard. The frontend displays what the backend computes and does no financial calculation.
+
+Everything it needs already exists in the API (see [api.md](api.md)):
+* simulations, markets, agents, news, experiments and live analytics over REST;
+* one WebSocket stream per simulation, with a snapshot followed by updates, and the message
+  types `snapshot`, `simulation`, `book`, `market`, `trades`, `bars`, `news`, `agents` and
+  `closed`.
+
+**Open decision:** the brief's trade tape shows buyer and seller, but the public tape is
+anonymous by design, since agents must not see counterparties. The frontend is an observer, so
+it could get an observer-only tape with participant ids. That would be a separate endpoint, and
+agents would still never see it.
+
 ## Working conventions
 
 * Commit and push after every meaningful step (the user's instruction).
@@ -335,11 +362,41 @@ Integration also removed an observer leak: each live reset left one more observe
   * an explanation of what was built and why;
   * the remaining limitations;
   * updated documentation.
-* After implementing, run an independent multi-agent adversarial review, in which every finding
-  must be reproduced before it is fixed, and then confirm the fixes in CI.
-* Local tools live in `.venv` (created by `uv venv --python 3.12`; `uv sync --all-packages`
-  rebuilds the extension).
+
+  Then wait for the user to start the next phase.
+* **Process that works:**
+  * Implement the core yourself.
+  * Hand disjoint pieces, such as API wiring and backend test gaps, to forks in isolated git
+    worktrees. Merge their branches when they report.
+  * Then run one or two short, focused reviews (time-boxed, about 20 minutes, reproduced bugs
+    only).
+  * Fix every finding with a regression test, and confirm in CI on Linux and macOS.
+  * Do not block on long multi-agent workflows: the user wants visible progress.
+* **Golden values.** These are pinned in the tests:
+  * the kernel digest;
+  * the market digest, trades and volume;
+  * RNG streams;
+  * the README examples' output.
+
+  Re-pin them only for an intended behaviour change, with the reason in the commit message, and
+  check that the values that should not move (for example trades and volume when only the
+  digest encoding changed) did not.
+* **Local tools** live in `.venv` (`uv venv --python 3.12`; `uv sync --all-packages --locked`
+  rebuilds the extension when C++ files change).
   * C++: `cmake --preset debug|release|asan`, then `ctest --preset …`.
-  * Python: `.venv/bin/pytest`, `.venv/bin/mypy`, `.venv/bin/ruff`.
-* Local port 8000 is taken on the development machine. `.claude/launch.json` (git-ignored) runs
-  the API on 8010.
+  * Python: `.venv/bin/pytest`, `.venv/bin/mypy`, `.venv/bin/ruff check python backend`, and
+    `ruff format --check`.
+  * Check every exit code explicitly.
+* **CI** (`ci.yml`, 12 jobs):
+  * the engine on Linux and macOS in debug, release and ASan+UBSan builds;
+  * the Python suite on Linux and macOS;
+  * the built wheel, installed non-editable, on Linux and macOS;
+  * the Docker image;
+  * the storage tests against real PostgreSQL.
+
+  `mutation.yml` runs the 61 engine mutants weekly.
+* **The development machine has neither PostgreSQL nor Docker.** They run only in CI, so
+  locally the storage tests use SQLite.
+* **Local port 8000 is taken.** `.claude/launch.json` (git-ignored) runs the API on 8010.
+* **Experiments spawn worker processes**, so drive them from a script file with an
+  `if __name__ == "__main__":` guard, not from standard input.
