@@ -22,6 +22,8 @@ Settings come from environment variables:
 | `UDESHI_MAX_BARS` | `500000` | Most OHLCV bars a simulation may produce (instruments × duration ÷ bar interval). Larger requests get 422. |
 | `UDESHI_TRADE_HISTORY` | `10000` | Recent trades kept per instrument for the tape endpoint and stream snapshots. |
 | `UDESHI_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins. |
+| `UDESHI_DATABASE_URL` | none | Where experiment results are kept: a SQLAlchemy URL such as `postgresql+psycopg://user:password@host:5432/db` (Compose sets one). Unset: an in-memory SQLite database, lost when the process exits. |
+| `UDESHI_EXPERIMENT_WORKERS` | min(4, CPUs) | Worker processes that run experiment simulations. |
 
 ## Conventions
 
@@ -106,15 +108,56 @@ same symbol twice, and an instrument following two leaders.
 
 | Method & path | Description |
 | --- | --- |
-| `GET /api/agents` | Every participant, in id order: the agents, the market environment (id `999999`, strategy `environment`; its trades are the liquidity shocks) and the API user (id `1000000`, strategy `manual`). Each has `strategy`, `symbols`, `cash`, `equity`, `total_pnl`, `realized_pnl`, `unrealized_pnl`, `return_pct`, `positions` (shares per symbol), `trades`, `orders_submitted`, `fills` and `filled_quantity`. |
+| `GET /api/agents` | Every participant, in id order: the agents, the market environment (id `999999`, strategy `environment`; its trades are the liquidity shocks) and the API user (id `1000000`, strategy `manual`). Each has `strategy`, `symbols`, `cash`, `equity`, `total_pnl`, `realized_pnl`, `unrealized_pnl`, `return_pct`, `sharpe_ratio` (per hour, from the live analytics; `null` until defined, and for simulations without a market), `positions` (shares per symbol), `trades`, `orders_submitted`, `fills` and `filled_quantity`. |
 | `GET /api/agents/{id}` | The same, plus `position_details` (quantity, average price, realized and unrealized P&L, shares bought and sold), `open_orders`, its last 50 order reports (`recent_orders`), `stats` (orders, rejections, cancels, fills, aggressive and passive fills; `null` for the user and the environment) and the strategy's own `metrics`: for a market maker `spread_earned`, `adverse_selection` and `markouts_measured`; for a pairs trader its last `z_score`; for the environment its news, shock and regime counts. |
-| `GET /api/news?limit=50` | Published news, oldest first: `time_seconds`, `symbol`, `impact` (the change in the log fundamental), `sentiment` (`positive` or `negative`) and `headline`. Unannounced shocks never appear. |
+| `GET /api/news?limit=50` | Published news, oldest first: `time_seconds`, `symbol`, `impact` (the change in the log fundamental), `sentiment` (`positive`, `negative`, or `neutral` for news that moved nothing) and `headline`. Unannounced shocks never appear. |
 
 **Accounting.** Cash and positions come from the kernel's portfolios, which book every
 execution exactly (with rational numbers) and use average-cost realized P&L. Positions are valued
 at the mark: the midprice when both sides are quoted, else the last trade, else the reference
 price. Across all participants, cash adds up to the total initial cash, positions to zero, and
 P&L to zero: trading moves money and shares between participants but never creates them.
+
+### Analytics
+
+`GET /api/simulations/{id}/analytics` returns the metrics of the run so far, for simulations
+with agents or a market environment (otherwise 409 `no_analytics`). The fields:
+* `market`: per instrument, volatility per hour, spread, depth, imbalance and pricing error
+  against the fundamental;
+* `microstructure`: effective and realized spread, price impact, fill rate and trade size;
+* `agents`: P&L, return, Sharpe ratio, drawdown, exposure, win rate, fill rate and average
+  prices;
+* `samples`, `interval_seconds` (1) and `markout_seconds` (5).
+
+The definitions are in [quantitative-metrics.md](quantitative-metrics.md) and
+[market-microstructure.md](market-microstructure.md).
+
+The live runner stops the clock at every sampling instant and markout horizon, as the experiment
+runner does, so live metrics are measured at exactly the right times. The exception is very high
+speeds: past 100 stops in one runner tick, the rest of the tick runs in one go, so samples thin
+out and markouts are read at the tick's end. A reset starts the analytics afresh.
+
+### Experiments
+
+An experiment runs one market many times, with seeds `base_seed`, `base_seed + 1`, …, optionally
+for every point of a parameter sweep. Runs execute in background worker processes, and each is
+stored as it finishes. Every run is a pure function of its settings and seed, so its `digest`
+and metrics are exactly what the Python library gives for the same seed.
+
+| Method & path | Description |
+| --- | --- |
+| `POST /api/experiments` | Queues an experiment and returns it (202). Body fields:<ul><li>`name`, `instruments`;</li><li>`duration_seconds` (default 300, at most 86400);</li><li>`runs` (seeds per point, default 10, at most 500);</li><li>`base_seed`, `order_latency_ms`, `initial_cash`;</li><li>`sample_interval_seconds` (1), `markout_seconds` (5);</li><li>`agents` and `market`, as for simulations (default: the default population and environment);</li><li>`sweep`: settings to vary, `{path: [values]}`, with paths such as `population.market_makers`, `environment.volatility` or `order_latency_ns`, and one point per combination.</li></ul>Limits: at most 50 points, 2,000 runs in total, and 60 days of simulated time across all runs. Every point is built before anything runs, so an invalid setting gives 422 `invalid_configuration` up front. |
+| `GET /api/experiments` | Every experiment, oldest first. |
+| `GET /api/experiments/{id}` | Status (`queued`, `running`, `completed`, `failed` with `error`, `cancelled`), progress (`runs_done` of `runs_total`), the request, and per point its `label`, `parameters` and a `summary` of every metric over the runs stored so far. Each metric summary has count, mean, stdev, stderr, a 95% Student-t confidence interval, minimum, 5th percentile, median, 95th percentile and maximum. |
+| `GET /api/experiments/{id}/runs` | Every stored run: point, seed, parameters, all metrics, digest, `wall_seconds` (measured, informational). |
+| `GET /api/experiments/{id}/runs.csv` · `summary.csv` | The same as CSV, in the library's format (`write_runs_csv`, `write_summary_csv`). |
+| `GET /api/experiments/compare?a=&b=&point_a=0&point_b=0` | Two experiment points, metric by metric: both means, their difference, and Welch's t-test (t, degrees of freedom, two-sided p-value). Only metrics both points define are compared. `compare.csv` gives the same as CSV. |
+| `POST /api/experiments/{id}/cancel` | Stops every run not yet started; a run already in a worker finishes there and is discarded. Status becomes `cancelled`. |
+| `DELETE /api/experiments/{id}` | Cancels if needed, then deletes the experiment and its runs (204). |
+
+Results are kept in the database named by `UDESHI_DATABASE_URL`. An experiment left unfinished
+by a server restart is marked `failed` when the server starts again. Only scalar metrics are
+stored per run, not the full time series.
 
 ## WebSocket stream
 
@@ -157,3 +200,5 @@ without locks:
 * Each live simulation's runner is an asyncio task on the same event loop.
 * Handlers never `await` between reading and mutating simulation state, so engine calls are
   serialised by construction.
+* Experiments never touch a live simulation. Their runs execute in separate worker processes,
+  and their database calls run in a thread, so neither blocks the event loop.

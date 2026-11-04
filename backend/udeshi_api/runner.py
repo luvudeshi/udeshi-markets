@@ -16,9 +16,13 @@ import logging
 from collections.abc import Callable
 from typing import Protocol
 
+from udeshi_markets.analytics import MarketObserver
 from udeshi_markets.simulation import SECOND, Simulation, SimulationState
 
 logger = logging.getLogger("udeshi_api.runner")
+
+MAX_OBSERVER_STOPS = 100
+"""Clock stops for analytics in one tick (one per sampling instant or markout horizon)."""
 
 _FINISHED = frozenset({SimulationState.STOPPED, SimulationState.COMPLETED, SimulationState.FAILED})
 
@@ -75,6 +79,30 @@ class LiveRunner:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
+    def _advance(self, simulation: Simulation, target: int) -> None:
+        """Advances to ``target``, processing at most the per-tick event cap. With an analytics
+        observer, the clock also stops at each of its sampling times and markout horizons (up to
+        MAX_OBSERVER_STOPS a tick; beyond that, at very high speeds, samples thin out)."""
+        observer = getattr(self._session, "observer", None)
+        if not isinstance(observer, MarketObserver):
+            simulation.run_until(target, max_events=self._max_events)
+            return
+        budget = self._max_events
+        for _ in range(MAX_OBSERVER_STOPS):
+            if simulation.state is not SimulationState.RUNNING or budget <= 0:
+                break
+            stop = min(target, observer.next_stop())
+            budget -= simulation.run_until(stop, max_events=budget)
+            observer.observe()
+            if simulation.now < stop or simulation.now >= target:
+                break  # The event cap stopped it early, or the tick is done.
+        else:
+            if simulation.state is SimulationState.RUNNING and budget > 0:
+                simulation.run_until(target, max_events=budget)
+                observer.observe()
+        if simulation.state in _FINISHED:
+            observer.finish()
+
     async def _run(self) -> None:
         clock = self._clock or asyncio.get_running_loop().time
         last = clock()
@@ -86,7 +114,7 @@ class LiveRunner:
                 simulation = self._session.simulation
                 if simulation.state is SimulationState.RUNNING:
                     advance = round(elapsed * self._session.speed * SECOND)
-                    simulation.run_until(simulation.now + advance, max_events=self._max_events)
+                    self._advance(simulation, simulation.now + advance)
                 self._session.publish_changes()
                 if simulation.state in _FINISHED:
                     logger.info("simulation %s %s", self._session.id, simulation.state.value)

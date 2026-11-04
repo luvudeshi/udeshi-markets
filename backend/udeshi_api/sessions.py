@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from fastapi import status
 
 from udeshi_api.errors import ApiError, not_found
+from udeshi_api.experiment_schemas import AnalyticsOut
 from udeshi_api.hub import Message, StreamHub
 from udeshi_api.manual import MANUAL_TRADER_ID as MANUAL_TRADER_ID  # Re-exported.
 from udeshi_api.manual import ManualTrader
@@ -53,12 +54,19 @@ from udeshi_api.serialization import (
 from udeshi_api.settings import Settings
 from udeshi_markets import OrderType, SelfTradePrevention, Side, TimeInForce
 from udeshi_markets.agents import PopulationConfig, market_simulation
+from udeshi_markets.analytics import (
+    MarketObserver,
+    analyze,
+    sharpe_ratio,
+    simple_returns,
+)
 from udeshi_markets.simulation import (
     Bar,
     CancelStatus,
     ChangeSet,
     EnvironmentConfig,
     MarketEnvironment,
+    OrderEvent,
     OrderIntent,
     Participant,
     Simulation,
@@ -98,6 +106,26 @@ _STATE_NAMES: dict[SimulationState, StateName] = {
     SimulationState.COMPLETED: "completed",
     SimulationState.FAILED: "failed",
 }
+
+
+class LiveObserver(MarketObserver):
+    """The analytics observer of a live session. A reset replaces it with a fresh one; the old
+    one is deactivated and let go of its data (the kernel keeps observers across resets)."""
+
+    active = True
+
+    def on_order(self, event: OrderEvent) -> None:
+        if self.active:
+            super().on_order(event)
+
+    def release(self) -> None:
+        self.active = False
+        self.trades = []
+        self.mid_after = {}
+        self.equity = {}
+        self.exposure = {}
+        self.series = []
+        self.times = []
 
 
 class LiveSession:
@@ -147,7 +175,8 @@ class LiveSession:
         else:
             self._simulation = Simulation(config, participants, track_changes=True)
         self.formats = [PriceFormat(instrument.tick_size) for instrument in config.instruments]
-        self.views = ParticipantViews(self._simulation, self.formats)
+        self.observer = self._new_observer()
+        self.views = ParticipantViews(self._simulation, self.formats, sharpe=self._sharpe)
         self._last_status: Message | None = None
         self.clock: Callable[[], float] = time.monotonic  # Paces leaderboard messages.
         self._leaderboard_at: float | None = None
@@ -202,6 +231,39 @@ class LiveSession:
     def agents(self) -> list[AgentOut]:
         return self.views.leaderboard()
 
+    # ---- Analytics ---------------------------------------------------------------------------
+    def _new_observer(self) -> LiveObserver | None:
+        return LiveObserver(self._simulation) if self.has_market else None
+
+    def _sharpe(self, participant_id: int) -> float | None:
+        observer = self.observer
+        if observer is None:
+            return None
+        equity = observer.equity.get(participant_id)
+        if equity is None:
+            return None
+        return sharpe_ratio(simple_returns(equity), observer.periods_per_hour)
+
+    def analytics(self) -> AnalyticsOut:
+        """Market, microstructure and agent metrics so far (needs a market environment)."""
+        observer = self.observer
+        if observer is None:
+            raise ApiError(
+                status.HTTP_409_CONFLICT,
+                "no_analytics",
+                "analytics need a market: create the simulation with agents or a market",
+            )
+        result = analyze(observer)
+        return AnalyticsOut(
+            time_seconds=to_seconds(self._simulation.now),
+            interval_seconds=to_seconds(observer.interval_ns),
+            markout_seconds=to_seconds(observer.markout_ns),
+            samples=len(observer.times),
+            market=list(result.market),
+            microstructure=list(result.microstructure),
+            agents=list(result.agents),
+        )
+
     def agent(self, agent_id: int) -> AgentDetailOut:
         return self.views.detail(agent_id)
 
@@ -239,6 +301,9 @@ class LiveSession:
     async def reset(self) -> None:
         await self.runner.stop()
         self._simulation.reset()
+        if self.observer is not None:
+            self.observer.release()
+        self.observer = self._new_observer()
         self.error = None
         # The previous state no longer applies (trade ids even restart at 1), so incremental
         # updates cannot express the change: every subscriber gets a fresh snapshot instead.
@@ -251,6 +316,8 @@ class LiveSession:
         if self._simulation.state is not SimulationState.PAUSED:
             raise SimulationStateError("pause the simulation before stepping it")
         processed = self._simulation.step(events)
+        if self.observer is not None:
+            self.observer.observe()
         self.publish_changes()
         return processed
 

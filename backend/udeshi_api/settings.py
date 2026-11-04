@@ -3,6 +3,8 @@
 import os
 from dataclasses import dataclass, field
 
+DEFAULT_EXPERIMENT_WORKERS = min(4, os.cpu_count() or 1)
+
 MAX_BOOK_DEPTH = 200
 """Deepest order book served, per side (the order-book endpoint's ``depth`` limit)."""
 
@@ -36,6 +38,11 @@ class Settings:
     trade_history_limit: int = 10_000
     """Recent trades kept per instrument for the tape endpoint and stream snapshots."""
     cors_origins: tuple[str, ...] = field(default=("http://localhost:3000",))
+    database_url: str | None = None
+    """Where experiment results are kept (a SQLAlchemy URL, e.g. postgresql+psycopg://...).
+    None: an in-memory SQLite database, lost when the process exits."""
+    experiment_workers: int = DEFAULT_EXPERIMENT_WORKERS
+    """Processes that run experiment simulations, in parallel with the live markets."""
 
     def __post_init__(self) -> None:
         if not 0.001 <= self.tick_seconds <= 5.0:
@@ -55,6 +62,8 @@ class Settings:
             raise ValueError("max_bars_per_simulation must be at least 1")
         if self.trade_history_limit < 1:
             raise ValueError("trade_history_limit must be at least 1")
+        if self.experiment_workers < 1:
+            raise ValueError("experiment_workers must be at least 1")
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -69,6 +78,8 @@ class Settings:
             stream_book_depth=_int("UDESHI_STREAM_BOOK_DEPTH", defaults.stream_book_depth),
             max_bars_per_simulation=_int("UDESHI_MAX_BARS", defaults.max_bars_per_simulation),
             trade_history_limit=_int("UDESHI_TRADE_HISTORY", defaults.trade_history_limit),
+            database_url=os.environ.get("UDESHI_DATABASE_URL") or None,
+            experiment_workers=_int("UDESHI_EXPERIMENT_WORKERS", defaults.experiment_workers),
             cors_origins=(
                 tuple(o.strip() for o in origins.split(",") if o.strip())
                 if origins
