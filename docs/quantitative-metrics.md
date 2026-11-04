@@ -28,6 +28,22 @@ Microstructure measures (spreads, impact, fill rates) have their own document:
 * **Exact accounting, float analytics.** Portfolios are exact (`Fraction`, see
   [trading-agents.md](trading-agents.md)). Final P&L figures come from them. Equity curves are
   sampled in floating point, accurate to about 1e-12 relative, which is enough for ratios.
+* **Computed as the run goes.** The observer keeps every metric's aggregates up to date as
+  observations arrive ([`running.py`](../python/udeshi_markets/analytics/running.py)), so a
+  report costs the same however long the run. A live market's analytics and leaderboard are
+  requested again and again, and recomputing them from the whole record took time in
+  proportion to its length: 130 ms after two simulated hours, now 0.7 ms
+  ([benchmarking.md](benchmarking.md)). The aggregates are the definitions below, evaluated
+  one observation at a time:
+  * means and volume-weighted means are bit for bit what the batch formulas give, because
+    the running sums use the built-in `sum()`'s own arithmetic (Neumaier's compensated
+    summation) in the same order;
+  * the sample variance (volatility, Sharpe ratio) uses Welford's algorithm, which agrees
+    with the two-pass formula to within 1e-12 relative (in practice, the last bit or two), and
+    is still exactly zero for identical values.
+
+  The tests hold every aggregate to its batch formula, and every metric of whole runs to the
+  batch computation over the full record.
 
 ## Statistics
 

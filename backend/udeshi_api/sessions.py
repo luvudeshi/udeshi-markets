@@ -56,12 +56,7 @@ from udeshi_api.serialization import (
 from udeshi_api.settings import Settings
 from udeshi_markets import OrderType, SelfTradePrevention, Side, TimeInForce
 from udeshi_markets.agents import PopulationConfig, market_simulation
-from udeshi_markets.analytics import (
-    MarketObserver,
-    analyze,
-    sharpe_ratio,
-    simple_returns,
-)
+from udeshi_markets.analytics import MarketObserver, analyze
 from udeshi_markets.simulation import (
     Bar,
     CancelStatus,
@@ -235,13 +230,10 @@ class LiveSession:
         return MarketObserver(self._simulation) if self.has_market else None
 
     def _sharpe(self, participant_id: int) -> float | None:
+        # Kept up to date by the observer as samples arrive: the leaderboard's cost does not
+        # grow with the length of the run.
         observer = self.observer
-        if observer is None:
-            return None
-        equity = observer.equity.get(participant_id)
-        if equity is None:
-            return None
-        return sharpe_ratio(simple_returns(equity), observer.periods_per_hour)
+        return None if observer is None else observer.sharpe_ratio(participant_id)
 
     def analytics(self) -> AnalyticsOut:
         """Market, microstructure and agent metrics so far (needs a market environment)."""
