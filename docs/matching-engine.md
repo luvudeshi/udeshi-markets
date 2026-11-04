@@ -66,8 +66,8 @@ PriceLevel
     pointer per lookup.
   * Measured in [benchmarking.md](benchmarking.md), the replacement roughly doubled add/cancel
     throughput and made random cancels in a 1M-order book 4.8 times faster.
-  * When it doubles it rehashes every entry in one go: a single insert then takes about 1.6 ms
-    at 2^18 entries and 6.6 ms at 2^20 (amortised O(1)).
+  * When it doubles it rehashes every entry in one go. A single insert then takes 1.5 ms at
+    2^18 entries and 6.1 ms at 2^20 (medians of three runs on the M4, amortised O(1)).
   * Id 0 marks an empty slot. The engine never assigns it, and `OrderBook::insert` rejects it.
 * **Self-validating primitives.** `OrderBook::insert` rejects anything `check_invariants()` would
   flag: wrong instrument, id 0 or a duplicate id, quantity or price out of range, invalid side,
@@ -275,7 +275,7 @@ ASan/UBSan on Linux (GCC, libstdc++) and macOS (Clang, libc++) in CI.
    * It shares no code with the engine: flat vectors, linear best-order scans, its own id and
      sequence counters, and its own validation of raw enum values.
    * 39 seeded streams (about 250k operations) run across four regimes: narrow, moderate, wide,
-     and a deep book of 5k–10k resting orders spanning several pool chunks.
+     and deep books of about 8k–14k resting orders spanning several pool chunks.
    * They mix limit, market and IOC orders, all STP modes, non-monotone timestamps, cancels of
      live, stale, unknown and wrong-instrument ids, and malformed input.
    * After **every** operation, every field of every result must equal the model.
@@ -343,10 +343,10 @@ failure marks the mutant itself as invalid.
 history behind that number:
 * The first version of the suite, with 20 mutants, missed one: an untested STP cancel
   quantity.
-* An independent adversarial review then built about 15 more mutants that the suite of the time
-  missed. They included sequence-number gaps, per-instrument id counters, timestamp-keyed FIFO,
-  wrong cancel reasons, and use of a released pool node.
-* A second review found about 15 more:
+* An independent adversarial review then added 29 mutants, among them bugs that the suite of
+  the time missed. They included sequence-number gaps, per-instrument id counters,
+  timestamp-keyed FIFO, wrong cancel reasons, and use of a released pool node.
+* A second review added 12 more:
   * an unchecked `noexcept` on `Exchange::submit`;
   * an unsaturated volume at the call site;
   * the market-order validation order;
@@ -378,11 +378,11 @@ history behind that number:
   `0.15000000000000002`, so canonical decimal formatting is left to the presentation layer.
 * `std::map` levels allocate a node per new price level, and lookups are O(log L). The
   benchmarks ([benchmarking.md](benchmarking.md)) show this matters most for books with many
-  sparsely filled levels: about 20 M add/cancel operations/s at 10,000 levels per side, against
-  53 M at one. A flat price-indexed ladder would be the next step there.
+  sparsely filled levels: about 19 M add/cancel operations/s at 10,000 levels per side, against
+  52 M at one. A flat price-indexed ladder would be the next step there.
 * `SubmitResult::trades` is a `std::vector`, so an order that trades allocates once, and again
   past 8 trades. In a mixed flow that is 0.15 of the 0.22 allocations per operation.
-* The id index rehashes in one go when it doubles (above): a multi-millisecond insert every
-  time a book passes a power of two of resting orders.
+* The id index rehashes in one go when it doubles (above). Each time a book passes a power of
+  two of resting orders, one insert pays for it: 1.5 ms at 2^18 entries, 6.1 ms at 2^20.
 * `Exchange::notional` is a `double` accumulator. Each term is exact, but the running sum has a
   relative rounding error of about 1e‑16.

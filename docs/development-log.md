@@ -12,7 +12,7 @@ What has been built, the decisions behind it, and what is next. The requirements
 | 3 | Trading agents, market dynamics, portfolio accounting | **Done.** Five strategies, a market environment, exact accounting, agents in the API. |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | **Done.** Documented metrics, an experiment framework, persistent experiments in the API. |
 | 5 | Next.js frontend, WebSocket integration, visualisations | **Done.** A live trading terminal and an experiment dashboard, tested end to end against the real backend. |
-| 6 | Benchmarks, profiling, optimisation, documentation | **Done.** Measured benchmarks; two profiles, two optimisations (engine about 2×, live analytics constant-time). |
+| 6 | Benchmarks, profiling, optimisation, documentation | **Done.** Measured benchmarks; three optimisations from two profiles (engine about 2×, live analytics constant-time). |
 
 ## Phase 1: matching engine
 
@@ -472,13 +472,15 @@ test, most in `e2e/regressions.spec.ts`):
   `std::unordered_map` order-id index (a heap node per resting order). `OrderIndex` replaced
   it: open addressing over one array, Fibonacci hashing, backward-shift deletion, no
   allocation per order.
-  * Add/cancel throughput rose 1.8× at 10k–1M orders and up to 4× with few price levels.
+  * Add/cancel throughput rose 1.8–1.9× at 10k–1M orders, and up to 3.9× with few price
+    levels.
   * Random cancels on a 1M-order book went 3.1 → 14.9 M/s.
-  * When it doubles, it still rehashes in one go (6.6 ms at 2^20 entries), which is
-    documented.
+  * When it doubles, it still rehashes in one go (6.1 ms at 2^20 entries, timed by the
+    harness), which is documented.
 * **Engine, the trades vector.** Takers allocated 1.9 times each as it doubled. It now reserves
-  8 trades at the first trade: the mixed flow went 23.8 → 26.7 M/s, and allocations per
-  operation 0.33 → 0.22.
+  8 trades at the first trade. Measured against a build with the new index only
+  (`apple-m4-index-only.json`, run just before the final one), the mixed flow went 23.8 → 26.7
+  M/s and allocations per operation 0.33 → 0.22.
 * **Python, live analytics.** cProfile showed every analytics request, and every leaderboard
   Sharpe ratio, recomputed over the whole run, at 130 ms per request at 2 simulated hours.
   `MarketObserver` now keeps running aggregates, and requests cost 0.6 ms at any run length.
@@ -508,33 +510,44 @@ so the API image (whose context has no `bench/`) failed to configure. This was c
 building from exactly the Dockerfile's files, and fixed.
 
 **Found by the review and fixed** (9 issues, each reproduced first):
-* **`OrderBook::insert` accepted order id 0**, which the new index uses to mark an empty slot.
-  The order was then lost from the index, and a duplicate id 0 was accepted. The engine never
-  assigns id 0, so only direct users of the primitive could hit it. It is now rejected, with
-  a test and a mutant.
-* **Replay verification was too weak.** It compared only the final sequence number and order
-  count, so replays with other prices or quantities passed. Each replay is now checked against
-  the recording: every field of every result, and the final book level by level. `--self-check`
-  in CI shows that nine changed replays fail.
-* **Two claims about worst cases were wrong:**
-  * The docs credited the baseline's 13.6 ms maximum to an index rehash that never happens in
-    that phase.
-  * They said the new index removed rehash stalls. It still rehashes when it doubles,
-    measured at 6.6 ms at 2^20 entries; this is now documented as a limitation.
-* **RSS per order was understated:** each size was measured after earlier books had been
-  freed in the same process. Each size now runs in a fresh process.
-* **Prose figures had drifted from the result files:** speed-ups, a level-count figure, the
-  allocation split, and an experiment cost that appeared in no result file. Every figure was
-  re-derived from the final results, and the README's table is now generated from them like
-  the rest.
-* **The clock's "resolution" was really the shortest read-to-read gap.** The counter's tick is
-  now reported (41.67 ns on the M4, 1 ns on Linux) beside the read gaps.
-* **`RunningMean` silently dropped floats after an int first value.** This was latent: no
-  caller mixes types. Mixing now raises `TypeError`.
+1. **`OrderBook::insert` accepted order id 0**, which the new index uses to mark an empty slot.
+   The order was then lost from the index, and a duplicate id 0 was accepted. The engine never
+   assigns id 0, so only direct users of the primitive could hit it. It is now rejected, with
+   a test and a mutant.
+2. **Replay verification was too weak.** It compared only the final sequence number and order
+   count, so replays with other prices or quantities passed. Each replay is now checked
+   against the recording: every field of every result, and the final book level by level.
+   `--self-check` in CI shows that nine changed replays fail.
+3. **The baseline's 13.6 ms maximum was misattributed.** The docs blamed it on an index rehash
+   that never happens in that phase.
+4. **The docs said the new index removed rehash stalls.** It does not: it rehashes when it
+   doubles. The harness now times those inserts.
+5. **RSS per order was understated.** Each size was measured after earlier books had been
+   freed in the same process; each now runs in a fresh process.
+6. **Prose figures had drifted from the result files:** speed-ups, a level-count figure and the
+   allocation split.
+7. **An experiment-cost figure appeared in no result file.** It is now derived from the
+   recorded runs.
+8. **The clock's "resolution" was really the shortest read-to-read gap.** The counter's tick is
+   now reported (41.67 ns on the M4, 1 ns on Linux) beside the read gaps.
+9. **`RunningMean` silently dropped floats after an int first value.** This was latent: no
+   caller mixes types. Mixing now raises `TypeError`.
+
+**Final audit against the brief and the result files.** It found:
+* the README lacked the brief's *Future improvements* section and a second screenshot;
+* the index-doubling and reserve-only figures came from runs that were not recorded;
+* the Python tables were typed by hand;
+* a few counts were wrong (deep-book sizes, the second review's mutants, ASan's extra test).
+
+All were fixed: the harness now records index growth, the index-only build has a result file,
+the Python tables are generated, and every figure in the text was re-derived. One result was
+also rerun: a burst of background load had slowed some repetitions of the final run. Both the
+index-only and the final run now use 11 repetitions; their medians agree with isolated
+reruns, and their min–max ranges are published.
 
 **Verification:**
-* C++: 175 engine tests in debug, release and ASan+UBSan; 68/68 mutants killed in CI on Linux
-  and macOS.
+* C++: 175 engine tests (176 under ASan+UBSan, which adds a pool-poisoning test) in debug,
+  release and ASan+UBSan; 68/68 mutants killed in CI on Linux and macOS.
 * Python: 453 tests (+30 for the running analytics, including whole-run comparisons with the
   old batch computation).
 * The benchmark's `--self-check` (in CI) shows replay verification catches changed replays.

@@ -34,7 +34,7 @@ environment for studying the resulting market behaviour.
   - scenario and exact-contract tests;
   - a structural invariant checker;
   - differential testing against an independent naive model over about 250k randomized
-    operations (multi-instrument, malformed input, books of 10k+ orders), comparing every
+    operations (multi-instrument, malformed input, deep books of about 8k–14k orders), comparing every
     result and the full book;
   - quantity-conservation and limit-price properties;
   - golden cross-platform determinism digests;
@@ -115,7 +115,7 @@ Details: [docs/quantitative-metrics.md](docs/quantitative-metrics.md) and
   - order entry as the API user.
 - **Simulation controls:** start, pause, resume, step, stop, reset and speed, plus a
   configuration dialog for the agent population and the market environment.
-- **Experiment dashboard:** create sweeps and Monte Carlo runs, watch them progress, see each
+- **Experiment dashboard** (below): create sweeps and Monte Carlo runs, watch them progress, see each
   metric's distribution per sweep point, and compare points with Welch's t-test.
 - **Display only.** Every number on screen is computed by the backend (even the cumulative
   depth). The TypeScript types are generated from the API's OpenAPI schema.
@@ -123,6 +123,8 @@ Details: [docs/quantitative-metrics.md](docs/quantitative-metrics.md) and
   - unit tests of the stream reducer and connection;
   - Playwright tests that drive the real backend and check the values shown against the REST
     API.
+
+![The experiment dashboard: a market-maker sweep's spread distribution per point, summaries and a comparison](docs/images/experiments.png)
 
 Details: [docs/frontend.md](docs/frontend.md).
 
@@ -136,15 +138,16 @@ results from CI, and the profiles behind the optimisations are in
 <!-- bench:readme:start -->
 | Engine workload | Throughput | Mean | p99 | p99.9 |
 | --- | ---: | ---: | ---: | ---: |
-| Mixed flow: adds, cancels, IOC and market orders, about 10k resting orders | 26.7 M ops/s | 37 ns | 167 ns | 250 ns |
-| Same flow through the `Exchange` (plus market data) | 24.6 M ops/s | 41 ns | 167 ns | 250 ns |
-| Add and cancel on a 100k-order book | 28.4 M ops/s | 35 ns | 125 ns | 167 ns |
-| Random cancels on a 1M-order book | 14.9 M ops/s | 67 ns | 292 ns | 792 ns |
-| A market order sweeping 10 levels (100 fills), timed alone | — | 1.6 µs | 1.8 µs | 2.2 µs |
+| Mixed flow: adds, cancels, IOC and market orders, about 10k resting orders | 26.7 M ops/s | 37 ns | 167 ns | 209 ns |
+| Same flow through the `Exchange` (plus market data) | 25.2 M ops/s | 40 ns | 167 ns | 250 ns |
+| Add and cancel on a 100k-order book | 29.5 M ops/s | 34 ns | 84 ns | 125 ns |
+| Random cancels on a 1M-order book | 14.9 M ops/s | 67 ns | 292 ns | 416 ns |
+| A market order sweeping 10 levels (100 fills), timed alone | — | 1.6 µs | 1.9 µs | 2.2 µs |
 <!-- bench:readme:end -->
 
-* **Reading the columns.** Means are per operation in a stream. Percentiles time each
-  operation alone, including the clock reads; the Apple clock ticks every 41.7 ns.
+* **Reading the columns.** Means are per operation in a stream; the sweep row's mean is timed
+  alone. Percentiles time each operation alone, including the clock reads. The Apple clock
+  ticks every 41.7 ns.
 * **Memory.** A resting order occupies 130 bytes of heap (one million orders), with no
   allocation per order.
 * **Optimisation.** Profiling showed malloc and free first, from a hash-table node per
@@ -279,8 +282,31 @@ build/release/bench/udeshi_bench --json results.json    # engine benchmarks (Rel
 uv run python bench/simulation_bench.py                 # simulation and live-API benchmarks
 ```
 
-CI runs all of these on Linux (GCC) and macOS (Clang), and builds and smoke-tests the Docker
-images.
+What CI runs, and where:
+
+| Checks | Runs on |
+| --- | --- |
+| Engine (debug, release, ASan+UBSan), Python suite, the built wheel, all 68 mutants (weekly and on demand) | Linux (GCC) and macOS (Clang) |
+| Frontend (lint, types, unit tests, Playwright), engine benchmarks with `--self-check`, PostgreSQL, the Docker images | Linux |
+| `bench/simulation_bench.py` | Not in CI; run it locally |
+
+## Future improvements
+
+These come from what the measurements and reviews showed; none is needed for the current
+scope:
+- **Engine.**
+  - A flat, price-indexed ladder in place of the `std::map` of price levels. It is the
+    largest remaining cost, and its cost grows as levels thin out.
+  - Pre-sizing or incremental rehashing for the id index, which now doubles in one insert
+    (6 ms at a million orders).
+  - Inline storage for the first few trades of an order.
+- **Scale.** Instruments sharded across cores, since books are independent.
+- **Order types.** Stop, iceberg, post-only and fill-or-kill orders, and order modification
+  instead of cancel-and-replace.
+- **Simulation speed.** The Python kernel (about 30 µs per order) bounds end-to-end speed.
+  Moving the event loop or the portfolio accounting into C++ would be the next step.
+- **Terminal.** Push analytics, open orders and experiment progress over the WebSocket
+  instead of polling them.
 
 ## Architecture
 

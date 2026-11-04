@@ -137,24 +137,76 @@ def by_kind(results: Result, name: str) -> str:
     return "\n".join(lines)
 
 
-def comparison(results: Result, baseline: Result) -> str:
+def comparison(results: Result, baseline: Result, intermediate: Result | None) -> str:
+    """Before, (after the first change,) and after: throughput, worst case, allocations."""
     before = {w["name"]: w for w in baseline["workloads"]}
+    middle = {} if intermediate is None else {w["name"]: w for w in intermediate["workloads"]}
+    rate_columns = "Before | Index only | After" if middle else "Before | After"
+    alloc_columns = "before → index only → after" if middle else "before → after"
     lines = [
-        "| Workload | Before, M ops/s | After, M ops/s | Speed-up | Max latency before → after "
-        "| Allocations per op before → after |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        f"| Workload | M ops/s: {rate_columns} | Speed-up | Max latency before → after "
+        f"| Allocations per op, {alloc_columns} |",
+        "| --- | ---: | ---: | ---: | ---: |",
     ]
     for row in results["workloads"]:
         old = before.get(row["name"])
         if old is None:
             continue
-        old_rate = old["ops_per_second"]["median"]
-        new_rate = row["ops_per_second"]["median"]
+        mid = middle.get(row["name"])
+        rates = [old, *([mid] if mid else []), row]
+        rate_text = " → ".join(millions(w["ops_per_second"]["median"]) for w in rates)
+        alloc_text = " → ".join(f"{allocations_per_op(w):.2f}" for w in rates)
+        speedup = row["ops_per_second"]["median"] / old["ops_per_second"]["median"]
         lines.append(
-            f"| `{row['name']}` | {millions(old_rate)} | {millions(new_rate)} "
-            f"| {new_rate / old_rate:.2f}{TIMES} | {old['latency']['max_ns']:,} → "
-            f"{row['latency']['max_ns']:,} ns | {allocations_per_op(old):.2f} → "
-            f"{allocations_per_op(row):.2f} |"
+            f"| `{row['name']}` | {rate_text} | {speedup:.2f}{TIMES} "
+            f"| {old['latency']['max_ns']:,} → {row['latency']['max_ns']:,} ns | {alloc_text} |"
+        )
+    return "\n".join(lines)
+
+
+def growth(results: Result) -> str:
+    """The inserts that double the id index, one timing per process."""
+    lines = [
+        "| Resting orders after the insert | Entries rehashed | Insert time, median "
+        "| Each process |",
+        "| ---: | ---: | ---: | ---: |",
+    ]
+    for point in results["index_growth"]:
+        samples = sorted(point["latency_ns"])
+        median_ns = samples[len(samples) // 2]
+        each = ", ".join(duration(ns) for ns in point["latency_ns"])
+        lines.append(
+            f"| {point['orders']:,} | {point['orders'] - 1:,} | {duration(median_ns)} | {each} |"
+        )
+    return "\n".join(lines)
+
+
+def python_kernel(final: Result) -> str:
+    lines = [
+        "| | Events/s | Orders/s | Trades/s | Simulated seconds per second |",
+        "| --- | ---: | ---: | ---: | ---: |",
+    ]
+    for row in final["kernel"]:
+        label = "With the analytics observer" if row["observed"] else "Headless"
+        lines.append(
+            f"| {label} | {row['events_per_second']:,.0f} | {row['orders_per_second']:,.0f} "
+            f"| {row['trades_per_second']:,.0f} | {row['simulated_seconds_per_second']:,.0f} |"
+        )
+    return "\n".join(lines)
+
+
+def python_live(before: Result, after: Result) -> str:
+    lines = [
+        "| Run length | Analytics endpoint | Sharpe, all participants | Leaderboard |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for old, new in zip(before["live"], after["live"], strict=True):
+        lines.append(
+            f"| {old['simulated_minutes']} min ({old['samples']:,} samples, "
+            f"{old['trades']:,} trades, {old['participants']} participants) "
+            f"| {old['analytics_endpoint_ms']:.1f} → {new['analytics_endpoint_ms']:.2f} "
+            f"| {old['sharpe_all_participants_ms']:.2f} → {new['sharpe_all_participants_ms']:.3f} "
+            f"| {old['leaderboard_ms']:.2f} → {new['leaderboard_ms']:.2f} |"
         )
     return "\n".join(lines)
 
@@ -226,6 +278,8 @@ def readme(results: Result) -> str:
 
 
 def duration(nanoseconds: float) -> str:
+    if nanoseconds >= 1e6:
+        return f"{nanoseconds / 1e6:.1f} ms"
     return f"{nanoseconds / 1000:.1f} µs" if nanoseconds >= 1000 else f"{nanoseconds:,.0f} ns"
 
 
@@ -243,7 +297,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("results", type=pathlib.Path)
     parser.add_argument("--baseline", type=pathlib.Path)
+    parser.add_argument("--intermediate", type=pathlib.Path)
     parser.add_argument("--linux", type=pathlib.Path)
+    parser.add_argument("--python", type=pathlib.Path, help="directory of python-*.json")
     parser.add_argument("--update", type=pathlib.Path)
     args = parser.parse_args()
     results = json.loads(args.results.read_text())
@@ -253,8 +309,23 @@ def main() -> int:
         "workloads": workloads(results),
         "mixed": by_kind(results, "patterns/mixed"),
     }
+    if results.get("index_growth"):
+        sections["growth"] = growth(results)
     if args.baseline is not None:
-        sections["comparison"] = comparison(results, json.loads(args.baseline.read_text()))
+        intermediate = (
+            None if args.intermediate is None else json.loads(args.intermediate.read_text())
+        )
+        sections["comparison"] = comparison(
+            results, json.loads(args.baseline.read_text()), intermediate
+        )
+    if args.python is not None:
+
+        def load(name: str) -> Result:
+            loaded: Result = json.loads((args.python / f"python-{name}.json").read_text())
+            return loaded
+
+        sections["python-kernel"] = python_kernel(load("final"))
+        sections["python-live"] = python_live(load("before"), load("after"))
     if args.linux is not None:
         sections["linux"] = summary(
             json.loads(args.linux.read_text()), f"`{args.linux.as_posix()}`, from the CI job"
