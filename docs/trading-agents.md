@@ -28,8 +28,14 @@ Agents are kernel participants, so the Phase 2 information boundary applies to t
 
 On top of that, a participant can be granted a **private signal** of fundamental values by
 setting `signal_noise` (only fundamental traders are). `ctx.fundamental_estimate(i)` then
-returns V·exp(σ·Z): the *current* value V with log-normal noise σ, where Z is drawn from the
-agent's own stream. Nothing returns future values.
+returns V·exp(σ·Z): the *current* value V with log-normal noise σ. Nothing returns future
+values. The signal is protected in three ways, which the tests check:
+* The noise Z comes from a stream only the kernel holds, so a participant cannot predict it by
+  copying its own generator.
+* It is drawn once per participant, instrument and instant, so asking repeatedly at one moment
+  returns the same estimate and the noise cannot be averaged away.
+* The grant is read and validated once, when the run is built, so a participant cannot grant
+  itself a signal later.
 
 Look-ahead is impossible by construction rather than by discipline:
 * The simulation generates the future lazily. Fundamentals at t + 1 do not exist at time t.
@@ -46,6 +52,10 @@ Agents read their own portfolio (`ctx.portfolio`, read-only) and cannot misrepor
   q·p·tick of cash, using the tick as the decimal it was written as (0.05, not
   0.05000000000000000277). Cash and shares are conserved exactly across all participants,
   which the tests check after every market run, along with total P&L summing to zero.
+* **Self-trades move nothing.** When one participant's orders trade with each other, cash,
+  position, cost basis and realized P&L stay as they are; only the activity counters move.
+  Agents never self-trade at all: their orders use self-trade prevention (cancel resting), since
+  a wash trade would inflate volume and trade counts.
 * **Average cost.** Adding to a position adds to its cost basis. Reducing it realizes
   (price − average cost) × quantity × sign(position). A trade that crosses zero closes the old
   position and opens the new one at the trade price.
@@ -182,7 +192,11 @@ reveals them.
 | **Liquidity shocks** | A market-wide Poisson process (`liquidity_shocks_per_hour`). The environment sends a market order of `liquidity_shock_quantity` shares on a random side and instrument, which sweeps the book. Its fills and P&L are booked like anyone's. |
 | **Correlated pairs** | For a pair (leader L, follower F): x_F(t) = x_F(0) + (x_L(t) − x_L(0)) + D(t), with D an Ornstein–Uhlenbeck process. Its discretisation is D ← a·D + s·Z, with a = e^(−κΔt), κ = ln 2 / `half_life_seconds`, and s = `deviation_volatility`·√(1 − a²), so D has stationary standard deviation `deviation_volatility`. ln P_L − ln P_F is therefore stationary (cointegrated), which is what makes pairs trading meaningful. Followers have no news or shocks of their own. |
 
-Every random draw comes from the environment's own seeded stream. Values are computed with the
+Every timer that would fire at or after the end of the run is never scheduled. A very rare
+event can be centuries away, and scheduling it would overflow the clock. The configuration is
+validated up front: rates and durations must be finite, sizes must be integers in range, and
+news or shocks with a positive rate need a positive impact. News with zero impact has
+sentiment 0. Every random draw comes from the environment's own seeded stream. Values are computed with the
 platform-independent `deterministic_exp` and `deterministic_log`, so a seed reproduces the same
 fundamentals on every machine. A golden market digest is pinned in the tests and checked on
 Linux and macOS in CI.

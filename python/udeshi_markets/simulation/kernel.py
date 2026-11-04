@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import enum
 import hashlib
+import math
 import struct
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
@@ -196,17 +197,10 @@ class SimulationContext:
         return self._simulation.recent_news(limit)
 
     def fundamental_estimate(self, instrument: int) -> float:
-        """A noisy private signal of the instrument's current fundamental value, in ticks:
-        V * exp(noise * Z), with Z drawn from this participant's own stream. Only participants
-        granted a signal (``signal_noise`` is not None) can ask, and only about the present."""
-        noise = self._simulation.participants[self._participant_id].signal_noise
-        if noise is None:
-            raise PermissionError(f"participant {self._participant_id} has no fundamental signal")
-        environment = self._simulation.environment
-        if environment is None:
-            raise SimulationStateError("this simulation has no market environment")
-        value = environment.fundamental(instrument) / self.tick_size(instrument)
-        return value * deterministic_exp(noise * self._rng.normal()) if noise > 0 else value
+        """A noisy private signal of the instrument's current fundamental value, in ticks.
+        Only participants granted a signal (``signal_noise`` not None when the run was built)
+        can ask, and only about the present. See ``Simulation.signal_estimate``."""
+        return self._simulation.signal_estimate(self._participant_id, instrument)
 
     # ---- Actions (scheduled, never executed re-entrantly) ------------------------------------
     def submit(self, intent: OrderIntent) -> None:
@@ -252,6 +246,10 @@ class EnvironmentContext(SimulationContext):
     __slots__ = ()
 
     def publish_news(self, instrument: int, impact: float, headline: str) -> None:
+        # Checked here, so a bad item cannot fail later in the middle of dispatch.
+        require_int("instrument", instrument, 0, self._simulation.exchange.instrument_count - 1)
+        if not (isinstance(impact, float) and math.isfinite(impact)):
+            raise ValueError("impact must be a finite float")
         if not isinstance(headline, str):
             raise TypeError("headline must be a str")
         headline.encode()
@@ -284,7 +282,34 @@ class Simulation:
 
     # ---- Construction and lifecycle ------------------------------------------------------------
     def _build(self) -> None:
+        """Builds a fresh run. Participants are built and checked first, before any state is
+        replaced, so a factory that fails leaves the previous run intact."""
         config = self._config
+        environment = None if self._environment_factory is None else self._environment_factory()
+        if environment is not None and not isinstance(environment, MarketEnvironment):
+            raise TypeError("environment must build a MarketEnvironment")
+        previous = {id(p) for p in getattr(self, "_participants", {}).values()}
+        participants: dict[int, Participant] = {}
+        for participant in (
+            *self._participant_factory(),
+            *(() if environment is None else (environment,)),
+        ):
+            if participant.participant_id in participants:
+                raise ValueError(f"duplicate participant id {participant.participant_id}")
+            if id(participant) in previous:
+                # A participant carries state from its run (positions it believes it has,
+                # timers, a volatility regime): reusing one would leak it into the new run.
+                raise ValueError("the factories must build new participants for every run")
+            participants[participant.participant_id] = participant
+        signal_noise: dict[int, float | None] = {}
+        for pid, participant in participants.items():
+            noise = participant.signal_noise
+            if noise is not None and not (
+                isinstance(noise, int | float) and math.isfinite(noise) and noise >= 0
+            ):
+                raise ValueError(f"participant {pid}: signal_noise must be None or finite >= 0")
+            signal_noise[pid] = None if noise is None else float(noise)
+
         self._exchange = Exchange(config.recent_trade_capacity)
         for instrument in config.instruments:
             self._exchange.add_instrument(
@@ -311,20 +336,18 @@ class Simulation:
         self._dirty: set[int] = set()
         self._pending_trades: list[PublicTrade] = []
         self._pending_bars: list[Bar] = []
-
-        participants: dict[int, Participant] = {}
-        environment = None if self._environment_factory is None else self._environment_factory()
-        if environment is not None and not isinstance(environment, MarketEnvironment):
-            raise TypeError("environment must build a MarketEnvironment")
-        for participant in (
-            *self._participant_factory(),
-            *(() if environment is None else (environment,)),
-        ):
-            if participant.participant_id in participants:
-                raise ValueError(f"duplicate participant id {participant.participant_id}")
-            participants[participant.participant_id] = participant
         self._participants = dict(sorted(participants.items()))
         self._environment = environment
+        # Granted once, at build time: a participant cannot grant itself a signal later.
+        self._signal_noise = signal_noise
+        # Signal noise comes from streams the kernel keeps to itself, so a participant cannot
+        # predict (and so remove) it by copying its own generator.
+        self._signal_rngs = {
+            pid: DeterministicRng.derive(config.seed, "signal", pid)
+            for pid, noise in signal_noise.items()
+            if noise is not None
+        }
+        self._signal_cache: dict[tuple[int, int], tuple[int, float]] = {}
         ticks = [exact_tick(instrument.tick_size) for instrument in config.instruments]
         initial_cash = Fraction(Decimal(repr(config.initial_cash)))
         self._portfolios = {pid: Portfolio(initial_cash, ticks) for pid in self._participants}
@@ -339,6 +362,29 @@ class Simulation:
             )
         self._news: deque[News] = deque(maxlen=1_000)
         self._pending_news: list[News] = []
+
+    def signal_estimate(self, participant_id: int, instrument: int) -> float:
+        """A participant's private signal of an instrument's current fundamental value, in
+        ticks: V * exp(noise * Z). Z comes from a stream only the kernel holds, and is drawn once
+        per participant, instrument and instant: asking again at the same time returns the same
+        estimate, so noise cannot be averaged away within an instant."""
+        noise = self._signal_noise.get(participant_id)
+        if noise is None:
+            raise PermissionError(f"participant {participant_id} has no fundamental signal")
+        if self._environment is None:
+            raise SimulationStateError("this simulation has no market environment")
+        if not 0 <= instrument < self._exchange.instrument_count:
+            raise KeyError(f"unknown instrument {instrument}")
+        key = (participant_id, instrument)
+        cached = self._signal_cache.get(key)
+        if cached is not None and cached[0] == self._now:
+            return cached[1]
+        tick = self._exchange.instrument(instrument).tick_size
+        value = self._environment.fundamental(instrument) / tick
+        if noise > 0:
+            value *= deterministic_exp(noise * self._signal_rngs[participant_id].normal())
+        self._signal_cache[key] = (self._now, value)
+        return value
 
     def start(self) -> None:
         self._require_outside_callbacks("start")
@@ -647,6 +693,12 @@ class Simulation:
         notifications: list[tuple[int, Callable[[], None]]] = []
         for trade in result.trades:
             # Books first, so that every callback sees portfolios that include this trade.
+            if trade.buyer == trade.seller:
+                # A self-trade moves nothing: no cash, no shares, no realized P&L.
+                self._portfolios[trade.buyer].apply_self_trade(
+                    trade.instrument, trade.price, trade.quantity
+                )
+                continue
             self._portfolios[trade.buyer].apply_fill(
                 trade.instrument, Side.BUY, trade.price, trade.quantity
             )

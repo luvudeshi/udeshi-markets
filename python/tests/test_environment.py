@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import math
+from fractions import Fraction
 
 import pytest
 
@@ -24,6 +26,7 @@ from udeshi_markets.simulation import (
     SimulationConfig,
     SimulationContext,
     SimulationStateError,
+    deterministic_exp,
     deterministic_log,
 )
 
@@ -222,14 +225,137 @@ def test_noisy_signals_scatter_around_the_true_value() -> None:
         signal_noise = 0.01
 
         def on_start(self, ctx: SimulationContext) -> None:
-            estimates.extend(ctx.fundamental_estimate(0) for _ in range(2000))
+            ctx.wakeup(1)
 
-    simulation(QUIET, [Analyst(1)]).start()
+        def on_wakeup(self, ctx: SimulationContext, tag: str) -> None:
+            estimates.append(ctx.fundamental_estimate(0))
+            if len(estimates) < 2000:
+                ctx.wakeup(1_000_000)  # A fresh observation every millisecond.
+
+    simulation(QUIET, [Analyst(1)]).run()
     logs = [deterministic_log(e / 10_000) for e in estimates]
     mean = sum(logs) / len(logs)
     stdev = math.sqrt(sum((x - mean) ** 2 for x in logs) / len(logs))
+    assert len(estimates) == 2000
     assert abs(mean) < 0.001
     assert 0.009 < stdev < 0.011
+
+
+def test_signal_noise_cannot_be_predicted_averaged_or_self_granted() -> None:
+    """The noise comes from a stream only the kernel holds, is drawn once per instant, and the
+    grant is fixed when the run is built."""
+    seen: dict[str, object] = {}
+
+    class Analyst(Participant):
+        signal_noise = 0.05
+
+        def on_start(self, ctx: SimulationContext) -> None:
+            predictor = copy.copy(ctx.rng)  # Its own stream says nothing about the noise.
+            first = ctx.fundamental_estimate(0)
+            seen["predicted"] = 10_000 * deterministic_exp(0.05 * predictor.normal())
+            seen["first"] = first
+            seen["again"] = [ctx.fundamental_estimate(0) for _ in range(100)]
+
+    class Outsider(Participant):
+        def on_start(self, ctx: SimulationContext) -> None:
+            self.signal_noise = 0.0  # Too late: grants are fixed at build time.
+            try:
+                ctx.fundamental_estimate(0)
+            except PermissionError:
+                seen["outsider"] = "refused"
+
+    simulation(QUIET, [Analyst(1), Outsider(2)]).start()
+    assert seen["first"] != seen["predicted"]
+    assert seen["again"] == [seen["first"]] * 100
+    assert seen["outsider"] == "refused"
+
+    class Bad(Participant):
+        signal_noise = math.nan
+
+    with pytest.raises(ValueError, match="signal_noise"):
+        simulation(QUIET, [Bad(1)])
+
+
+def test_a_self_trade_moves_no_money_and_realizes_nothing() -> None:
+    sim = simulation(QUIET, [Participant(1)])
+    sim.start()
+    sim.submit_now(1, OrderIntent(0, Side.BUY, 10, price=10_000))
+    sim.submit_now(1, OrderIntent(0, Side.SELL, 4, price=10_000))  # Crosses its own bid.
+    book = sim.portfolio(1)
+    details = book.details(0)
+    assert book.cash == Fraction(1_000_000)
+    assert book.position(0) == 0
+    assert book.realized_pnl() == 0
+    assert (details.trades, details.bought, details.sold) == (2, 4, 4)
+
+
+def test_agents_never_trade_with_themselves() -> None:
+    from udeshi_markets.agents import market_simulation
+
+    sim = market_simulation(SimulationConfig(duration_ns=5 * MINUTE, seed=1))
+    sim.run()
+    for instrument in range(sim.exchange.instrument_count):
+        trades = sim.exchange.recent_trades(instrument, 1000)
+        assert trades
+        assert all(trade.buyer != trade.seller for trade in trades)
+
+
+def test_rare_events_beyond_the_end_are_never_scheduled() -> None:
+    """A tiny rate can put the next event centuries away: past the end it is never scheduled
+    (it would never be processed), rather than overflowing the clock."""
+    rare = EnvironmentConfig(news_per_hour=1e-8, volatile_seconds=1e12, calm_seconds=1e12)
+    sim = simulation(rare)
+    assert sim.run().state.name == "COMPLETED"
+    assert sim.pending_events == 0
+
+
+def test_a_failed_reset_leaves_the_previous_run_intact() -> None:
+    builds = 0
+
+    def factory() -> list[Participant]:
+        nonlocal builds
+        builds += 1
+        if builds > 1:
+            raise RuntimeError("factory broke")
+        return [Participant(1)]
+
+    config = SimulationConfig(instruments=TWO, duration_ns=MINUTE)
+    sim = Simulation(config, factory, environment=lambda: MarketEnvironment(QUIET))
+    sim.start()
+    sim.submit_now(1, OrderIntent(0, Side.BUY, 5, price=9_000))
+    sim.stop()
+    with pytest.raises(RuntimeError, match="factory broke"):
+        sim.reset()
+    assert sim.state.name == "STOPPED"
+    assert sim.exchange.resting_order_count(0) == 1
+
+
+def test_reused_participants_are_refused_on_reset() -> None:
+    environment = MarketEnvironment(QUIET)
+    sim = Simulation(SimulationConfig(instruments=TWO), environment=lambda: environment)
+    with pytest.raises(ValueError, match="new participants"):
+        sim.reset()
+
+
+def test_published_news_is_checked_when_published() -> None:
+    attempts: list[str] = []
+
+    class Publisher(MarketEnvironment):
+        def on_start(self, ctx: SimulationContext) -> None:
+            super().on_start(ctx)
+            env = self._env(ctx)
+            for instrument, impact in ((7, 0.01), (0, math.inf), (0, "0.01")):
+                try:
+                    env.publish_news(instrument, impact, "x")  # type: ignore[arg-type]
+                except ValueError as error:
+                    attempts.append(str(error).split(" ")[0])
+
+    config = SimulationConfig(instruments=TWO, duration_ns=MINUTE)
+    sim = Simulation(config, environment=lambda: Publisher(QUIET))
+    sim.run()
+    assert attempts == ["instrument", "impact", "impact"]
+    assert sim.recent_news() == []
+    assert News(0, 0, 0.0, "flat").sentiment == 0
 
 
 @pytest.mark.parametrize(
@@ -240,6 +366,11 @@ def test_noisy_signals_scatter_around_the_true_value() -> None:
         ({"volatile_multiplier": 0.5}, "volatile_multiplier"),
         ({"calm_seconds": 0}, "regime durations"),
         ({"liquidity_shock_quantity": 0}, "liquidity_shock_quantity"),
+        ({"liquidity_shock_quantity": 200.0}, "liquidity_shock_quantity"),
+        ({"liquidity_shock_quantity": 1 << 63}, "liquidity_shock_quantity"),
+        ({"calm_seconds": math.inf}, "regime durations"),
+        ({"step_ns": 1e9}, "step_ns"),
+        ({"news_impact": 0.0}, "news_impact must be positive"),
         (
             {"pairs": (PairConfig("A", "B"), PairConfig("C", "B"))},
             "follow only one leader",
@@ -252,6 +383,8 @@ def test_environment_configuration_is_validated(kwargs: dict[str, object], messa
         EnvironmentConfig(**kwargs)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="two different"):
         PairConfig("A", "A")
+    with pytest.raises(ValueError, match="deviation_volatility"):
+        PairConfig("A", "B", deviation_volatility=math.inf)
 
 
 def test_the_environment_must_be_installed_as_the_environment() -> None:

@@ -90,7 +90,8 @@ class News:
 
     @property
     def sentiment(self) -> int:
-        return 1 if self.impact > 0 else -1
+        """+1 for positive news, -1 for negative, 0 for news that moved nothing."""
+        return (self.impact > 0) - (self.impact < 0)
 
 
 @dataclass(frozen=True, slots=True)

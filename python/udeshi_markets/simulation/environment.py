@@ -33,7 +33,7 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from udeshi_markets._engine import OrderType, Side
+from udeshi_markets._engine import MAX_ORDER_QUANTITY, OrderType, Side
 from udeshi_markets.simulation.events import OrderIntent
 from udeshi_markets.simulation.participant import Participant
 from udeshi_markets.simulation.rng import DeterministicRng, deterministic_exp, deterministic_log
@@ -56,10 +56,10 @@ class PairConfig:
     def __post_init__(self) -> None:
         if self.leader == self.follower:
             raise ValueError("a pair needs two different instruments")
-        if not self.half_life_seconds > 0:
-            raise ValueError("half_life_seconds must be positive")
-        if not self.deviation_volatility >= 0:
-            raise ValueError("deviation_volatility must be non-negative")
+        if not (math.isfinite(self.half_life_seconds) and self.half_life_seconds > 0):
+            raise ValueError("half_life_seconds must be finite and positive")
+        if not (math.isfinite(self.deviation_volatility) and self.deviation_volatility >= 0):
+            raise ValueError("deviation_volatility must be finite and non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,8 +80,8 @@ class EnvironmentConfig:
     pairs: tuple[PairConfig, ...] = field(default=())
 
     def __post_init__(self) -> None:
-        if self.step_ns <= 0:
-            raise ValueError("step_ns must be positive")
+        if isinstance(self.step_ns, bool) or not isinstance(self.step_ns, int) or self.step_ns <= 0:
+            raise ValueError("step_ns must be a positive int")
         for name in (
             "volatility",
             "news_per_hour",
@@ -97,10 +97,22 @@ class EnvironmentConfig:
             raise ValueError("volatile_multiplier must be at least 1")
         if not (math.isfinite(self.volatile_activity) and self.volatile_activity > 0):
             raise ValueError("volatile_activity must be positive")
-        if not (self.calm_seconds > 0 and self.volatile_seconds > 0):
-            raise ValueError("regime durations must be positive")
-        if self.liquidity_shock_quantity < 1:
-            raise ValueError("liquidity_shock_quantity must be at least 1")
+        for name in ("calm_seconds", "volatile_seconds"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and value > 0):
+                raise ValueError(f"regime durations must be finite and positive ({name})")
+        quantity = self.liquidity_shock_quantity
+        if (
+            isinstance(quantity, bool)
+            or not isinstance(quantity, int)
+            or not 1 <= quantity <= MAX_ORDER_QUANTITY
+        ):
+            raise ValueError(
+                f"liquidity_shock_quantity must be an int in [1, {MAX_ORDER_QUANTITY}]"
+            )
+        for rate, impact in (("news_per_hour", "news_impact"), ("shocks_per_hour", "shock_impact")):
+            if getattr(self, rate) > 0 and not getattr(self, impact) > 0:
+                raise ValueError(f"{impact} must be positive when {rate} is")
         followers = [pair.follower for pair in self.pairs]
         if len(set(followers)) != len(followers):
             raise ValueError("an instrument can follow only one leader")
@@ -146,6 +158,10 @@ class MarketEnvironment(Participant):
     def on_start(self, ctx: SimulationContext) -> None:
         env = self._env(ctx)
         self._rng = env.rng
+        self._volatile = False
+        self._follows.clear()
+        self._deviation.clear()
+        self.news_published = self.shocks = self.liquidity_shocks = self.regime_changes = 0
         count = len(env.symbols)
         self._ticks = [env.tick_size(i) for i in range(count)]
         self._values = [env.reference_price(i) * self._ticks[i] for i in range(count)]
@@ -162,7 +178,7 @@ class MarketEnvironment(Participant):
             s = pair.deviation_volatility * math.sqrt(1.0 - a * a)
             self._follows[index[pair.follower]] = (index[pair.leader], a, s)
             self._deviation[index[pair.follower]] = 0.0
-        ctx.wakeup(self.config.step_ns, "step")
+        self._wake_if_before_end(ctx, self.config.step_ns, "step")
         self._schedule_regime(ctx)
         for i in self._independent(count):
             self._schedule(ctx, self.config.news_per_hour, f"news:{i}")
@@ -174,7 +190,7 @@ class MarketEnvironment(Participant):
         rng = self._require_rng()
         if kind == "step":
             self._diffuse()
-            ctx.wakeup(self.config.step_ns, "step")
+            self._wake_if_before_end(ctx, self.config.step_ns, "step")
         elif kind == "regime":
             self._volatile = not self._volatile
             self.regime_changes += 1
@@ -183,7 +199,9 @@ class MarketEnvironment(Participant):
             i = int(target)
             impact = self._jump(i, self.config.news_impact)
             self.news_published += 1
-            word = "beats expectations" if impact > 0 else "misses expectations"
+            word = {1: "beats expectations", -1: "misses expectations"}.get(
+                (impact > 0) - (impact < 0), "is in line with expectations"
+            )
             self._env(ctx).publish_news(i, impact, f"{self._env(ctx).symbols[i]} {word}")
             self._schedule(ctx, self.config.news_per_hour, tag)
         elif kind == "shock":
@@ -244,14 +262,20 @@ class MarketEnvironment(Participant):
     def _schedule(self, ctx: SimulationContext, per_hour: float, tag: str) -> None:
         if per_hour <= 0:
             return
-        rate_per_ns = per_hour / HOUR
-        delay = self._require_rng().exponential(rate_per_ns)
-        ctx.wakeup(max(1, round(delay)), tag)
+        delay = self._require_rng().exponential(per_hour / HOUR)
+        self._wake_if_before_end(ctx, delay, tag)
 
     def _schedule_regime(self, ctx: SimulationContext) -> None:
         mean = self.config.volatile_seconds if self._volatile else self.config.calm_seconds
         delay = self._require_rng().exponential(1.0 / (mean * SECOND))
-        ctx.wakeup(max(1, round(delay)), "regime")
+        self._wake_if_before_end(ctx, delay, "regime")
+
+    @staticmethod
+    def _wake_if_before_end(ctx: SimulationContext, delay: float, tag: str) -> None:
+        """Schedules a timer unless it would fire at or after the end of the run (where it
+        would never be processed; a very rare event can be centuries away)."""
+        if delay < ctx.end_time - ctx.now:
+            ctx.wakeup(max(1, round(delay)), tag)
 
     def _require_rng(self) -> DeterministicRng:
         if self._rng is None:

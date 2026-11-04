@@ -574,6 +574,6 @@ def test_market_orders_and_instrument_bounds_from_agents_are_valid() -> None:
 
 # A five-minute, 26-agent market. Strategies use only exactly rounded arithmetic (and the
 # deterministic log and exp), so these hold on every platform; CI checks Linux and macOS.
-GOLDEN_TRADES = 2450
-GOLDEN_VOLUME = 17305
-GOLDEN_DIGEST = "86c900244a093ddb5e457885c4a62e7e"
+GOLDEN_TRADES = 2297
+GOLDEN_VOLUME = 16929
+GOLDEN_DIGEST = "b0460effe81fdcd43c2ad1a44f5f2b6d"

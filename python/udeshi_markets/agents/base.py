@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import ClassVar
 
-from udeshi_markets._engine import OrderStatus, OrderType, Side, TimeInForce
+from udeshi_markets._engine import OrderStatus, OrderType, SelfTradePrevention, Side, TimeInForce
 from udeshi_markets.simulation import (
     SECOND,
     CancelReport,
@@ -32,6 +32,9 @@ from udeshi_markets.simulation import (
 )
 
 ACT = "act"  # Tag of an agent's regular, self-rescheduling wakeup.
+# Agents never trade with themselves: a wash trade moves nothing, but would inflate volume and
+# trade counts. An order that would cross the agent's own resting order cancels that order.
+NO_SELF_TRADES = SelfTradePrevention.CANCEL_RESTING
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,11 +130,25 @@ class TradingAgent(Participant):
     ) -> None:
         """A limit order (immediate-or-cancel if ``immediate``). Prices are clamped to >= 1."""
         tif = TimeInForce.IMMEDIATE_OR_CANCEL if immediate else TimeInForce.GOOD_TILL_CANCEL
-        intent = OrderIntent(instrument, side, quantity, price=max(1, price), time_in_force=tif)
+        intent = OrderIntent(
+            instrument,
+            side,
+            quantity,
+            price=max(1, price),
+            time_in_force=tif,
+            self_trade_prevention=NO_SELF_TRADES,
+        )
         self.submit(ctx, intent)
 
     def market(self, ctx: SimulationContext, instrument: int, side: Side, quantity: int) -> None:
-        self.submit(ctx, OrderIntent(instrument, side, quantity, order_type=OrderType.MARKET))
+        intent = OrderIntent(
+            instrument,
+            side,
+            quantity,
+            order_type=OrderType.MARKET,
+            self_trade_prevention=NO_SELF_TRADES,
+        )
+        self.submit(ctx, intent)
 
     def cancel(self, ctx: SimulationContext, order: OpenOrder) -> None:
         if order.order_id in self._cancelling:

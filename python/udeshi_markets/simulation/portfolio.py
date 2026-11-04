@@ -91,6 +91,20 @@ class Portfolio:
             position.realized += realized
         return realized
 
+    def apply_self_trade(self, instrument: int, price: int, quantity: int) -> None:
+        """Books a trade between two of this participant's own orders. Nothing changes hands,
+        so cash, position, cost basis and realized P&L stay as they are. Only the activity
+        counters move: two fills, quantity bought and sold."""
+        if quantity <= 0:
+            raise ValueError("fill quantity must be positive")
+        position = self._positions[instrument]
+        notional = self._ticks[instrument] * price * quantity
+        position.trades += 2
+        position.bought += quantity
+        position.sold += quantity
+        position.buy_notional += notional
+        position.sell_notional += notional
+
     # ---- Read access ------------------------------------------------------------------------
     @property
     def initial_cash(self) -> Fraction:

@@ -12,8 +12,8 @@ README = Path(__file__).resolve().parents[2] / "README.md"
 
 EXPECTED = [
     "9263 28424 dbcb62714eb57ef0c337fed2bbec35d5\n",
-    "3767 {'fundamental': 1787, 'market_maker': -1363, 'momentum': 298, 'pairs': 1, "
-    "'random': -722}\n",
+    "3463 {'fundamental': 2038, 'market_maker': -1453, 'momentum': 206, "
+    "'pairs': -31, 'random': -760}\n",
 ]
 
 
