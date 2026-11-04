@@ -4,16 +4,22 @@ from fastapi import APIRouter, Response, status
 
 from udeshi_api.deps import Sessions
 from udeshi_api.errors import ApiError
-from udeshi_api.schemas import SimulationCreate, SimulationOut, SpeedIn, StepIn
+from udeshi_api.schemas import MarketIn, SimulationCreate, SimulationOut, SpeedIn, StepIn
 from udeshi_api.settings import Settings
+from udeshi_markets.agents import PopulationConfig
 from udeshi_markets.simulation import (
     DEFAULT_INSTRUMENTS,
+    EnvironmentConfig,
     InstrumentConfig,
+    PairConfig,
     SimulationConfig,
     seconds,
 )
 
 router = APIRouter(prefix="/api/simulations", tags=["simulations"])
+
+DEFAULT_PAIR = ("ACME", "NOVA")
+"""The pair used when agents are requested and no pairs are given, if both symbols exist."""
 
 
 def _config(body: SimulationCreate, settings: Settings) -> SimulationConfig:
@@ -31,6 +37,7 @@ def _config(body: SimulationCreate, settings: Settings) -> SimulationConfig:
             seed=body.seed,
             order_latency_ns=round(body.order_latency_ms * 1_000_000),
             bar_interval_ns=seconds(body.bar_interval_seconds),
+            initial_cash=body.initial_cash,
             trade_history_limit=settings.trade_history_limit,
         )
     except ValueError as error:
@@ -46,6 +53,58 @@ def _config(body: SimulationCreate, settings: Settings) -> SimulationConfig:
     return config
 
 
+def _market(
+    body: SimulationCreate, config: SimulationConfig
+) -> tuple[PopulationConfig | None, EnvironmentConfig | None]:
+    """The agent population and market environment requested (both None: neither)."""
+    if body.agents is None and body.market is None:
+        return None, None
+    market = body.market or MarketIn()
+    symbols = set(config.symbols)
+    try:
+        pairs: tuple[PairConfig, ...]
+        if market.pairs is None:
+            default = set(DEFAULT_PAIR) <= symbols
+            pairs = (PairConfig(*DEFAULT_PAIR),) if default else ()
+        else:
+            for pair in market.pairs:
+                unknown = sorted({pair.leader, pair.follower} - symbols)
+                if unknown:
+                    raise _invalid(f"pair {pair.leader}/{pair.follower}: unknown {unknown}")
+            pairs = tuple(
+                PairConfig(p.leader, p.follower, p.half_life_seconds, p.deviation_volatility)
+                for p in market.pairs
+            )
+        environment = EnvironmentConfig(
+            volatility=market.volatility,
+            volatile_multiplier=market.volatile_multiplier,
+            news_per_hour=market.news_per_hour,
+            news_impact=market.news_impact,
+            shocks_per_hour=market.shocks_per_hour,
+            shock_impact=market.shock_impact,
+            liquidity_shocks_per_hour=market.liquidity_shocks_per_hour,
+            liquidity_shock_quantity=market.liquidity_shock_quantity,
+            pairs=pairs,
+        )
+        population = (
+            None
+            if body.agents is None
+            else PopulationConfig(
+                random_traders=body.agents.random_traders,
+                market_makers=body.agents.market_makers,
+                momentum_traders=body.agents.momentum_traders,
+                fundamental_traders=body.agents.fundamental_traders,
+                pairs_traders=body.agents.pairs_traders,
+                order_frequency=body.agents.order_frequency,
+            )
+        )
+    except ValueError as error:
+        raise _invalid(str(error)) from error
+    if population is not None and population.pairs_traders and not environment.pairs:
+        raise _invalid("pairs traders need a pair: add one under market.pairs")
+    return population, environment
+
+
 def _invalid(message: str) -> ApiError:
     return ApiError(status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid_configuration", message)
 
@@ -57,7 +116,9 @@ async def list_simulations(sessions: Sessions) -> list[SimulationOut]:
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_simulation(body: SimulationCreate, sessions: Sessions) -> SimulationOut:
-    session = sessions.create(_config(body, sessions.settings), body.speed)
+    config = _config(body, sessions.settings)
+    population, environment = _market(body, config)
+    session = sessions.create(config, body.speed, population=population, environment=environment)
     return session.describe(active=True)
 
 
