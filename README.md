@@ -6,6 +6,11 @@ environment for studying the resulting market behaviour.
 
 > Everything is simulated. No real money, brokerage accounts, or real-world order routing.
 
+**Live demo:** https://udeshi-markets.vercel.app. The terminal is on Vercel; the API runs on
+Render's free plan, which sleeps when idle, so the first visit after a quiet spell can wait
+about a minute. Press *Quick start* to run a market. See
+[docs/deployment.md](docs/deployment.md).
+
 **Status:** all six phases are complete:
 - the matching engine;
 - the Python bindings, the discrete-event simulation kernel and the exchange API;

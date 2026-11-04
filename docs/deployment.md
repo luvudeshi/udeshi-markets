@@ -6,7 +6,7 @@ hosting:
 | Part | Where | Why there |
 | --- | --- | --- |
 | Terminal (`frontend/`) | Vercel project `udeshi-markets`: https://udeshi-markets.vercel.app | A Next.js app with server-rendered pages, which is exactly what Vercel hosts. |
-| API (`backend/`, with the C++ engine) | Render web service `udeshi-markets-api`, from [`render.yaml`](../render.yaml) | It needs a long-lived process: the live runner is an asyncio task, simulations live in memory, the stream is a WebSocket, and experiments run in worker processes. Serverless functions provide none of these. |
+| API (`backend/`, with the C++ engine) | Render web service `udeshi-markets-api`: https://udeshi-markets-api.onrender.com, from [`render.yaml`](../render.yaml) | It needs a long-lived process: the live runner is an asyncio task, simulations live in memory, the stream is a WebSocket, and experiments run in worker processes. Serverless functions provide none of these. |
 
 The browser talks to the API directly, over HTTPS and WSS. The terminal learns the API's
 address from `UDESHI_API_URL`, which the server reads at request time (see
@@ -23,13 +23,20 @@ vercel deploy --prod
 
 * **Uploads.** `frontend/.vercelignore` keeps local secrets (`.env*.local`, including the
   token `vercel link` writes) and build or test output out of every upload.
-* **Configuration.** Changing `UDESHI_API_URL` takes effect with the next deployment.
+* **Configuration.** Production's `UDESHI_API_URL` is `https://udeshi-markets-api.onrender.com`.
+  Changing it takes effect with the next deployment.
+* **No Git integration.** The project is not connected to Git, so a change to the terminal
+  ships with `vercel deploy --prod`.
 
 ## The API (Render)
 
 In the Render dashboard, choose **New → Blueprint**, then this repository. Render reads
 `render.yaml`, builds `backend/Dockerfile` (compiling the engine), and checks
-`/api/health`. Its settings:
+`/api/health`.
+* **Repository access.** Render's GitHub app is installed on this repository only.
+* **Deploys.** The service is blueprint-managed, and every push to `main` redeploys it.
+
+Its settings:
 
 | Variable | Value | Why |
 | --- | --- | --- |
