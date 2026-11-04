@@ -86,9 +86,10 @@ function SimulationPicker({
   const [confirming, setConfirming] = useState(false);
   const [busy, run] = useAction();
   const { data: simulations, refresh } = usePoll(
-    `simulations:${version}:${simulationId ?? ""}:${state ?? ""}`,
+    "simulations",
     () => api.listSimulations(),
     null,
+    `${version}:${simulationId ?? ""}:${state ?? ""}`,
   );
 
   useEffect(() => {

@@ -44,18 +44,20 @@ export function MarketOverview({ className = "" }: { className?: string }) {
     state.status?.state === "running" ? "live" : String(state.status?.time_seconds ?? 0),
   );
   const running = moment === "live";
-  const refresh = simulationId === null ? null : `${simulationId}:${snapshots}:${moment}`;
+  const refresh = `${snapshots}:${moment}`;
   // Analytics exist only for markets with an environment (it is listed as a participant).
   const hasMarket = agents.some((agent) => agent.strategy === "environment");
   const analytics = usePoll<AnalyticsOut>(
-    hasMarket ? refresh : null,
+    hasMarket ? simulationId : null,
     () => api.analytics(simulationId ?? ""),
     running ? ANALYTICS_MS : null,
+    refresh,
   );
   const simulation = usePoll(
-    refresh,
+    simulationId,
     () => api.getSimulation(simulationId ?? ""),
     running ? SUMMARY_MS : null,
+    refresh,
   );
 
   const volatility = useMemo(() => {

@@ -102,9 +102,10 @@ export function AgentDrawer({
   const dialog = useRef<HTMLElement>(null);
 
   const detail = usePoll<AgentDetailOut>(
-    `${simulationId}:${agentId}:${snapshots}:${moment}`,
+    `${simulationId}:${agentId}`,
     () => api.agent(simulationId, agentId),
     moment === "live" ? DETAIL_MS : null,
+    `${snapshots}:${moment}`,
   );
 
   const close = useEffectEvent(onClose);

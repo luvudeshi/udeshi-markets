@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DASH } from "../../lib/format";
+import { DASH } from "@/lib/format";
 import { fmtDifference, fmtMetric, fmtP, isActive, metricLabel, pointName } from "./format";
 import { jitter, niceAxis } from "./scale";
 

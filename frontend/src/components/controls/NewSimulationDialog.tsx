@@ -8,7 +8,7 @@ import { fmtInt } from "@/lib/format";
 import { useTerminal } from "@/lib/stream/store";
 
 import { useControls } from "./controls-store";
-import { describeError, type ErrorDescription } from "./errors";
+import { describeError, type ErrorDescription } from "@/lib/errors";
 import {
   AGENT_FIELDS,
   DEFAULT_FORM,
@@ -89,7 +89,8 @@ export function NewSimulationDialog() {
     event.preventDefault();
     const result = toRequest(values);
     if ("problems" in result) {
-      setError({ title: "Some fields are not numbers", lines: result.problems });
+      const message = "Some fields are not numbers";
+      setError({ code: "invalid_input", message, title: message, lines: result.problems });
       return;
     }
     setBusy(true);

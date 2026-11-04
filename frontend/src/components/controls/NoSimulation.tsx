@@ -8,7 +8,7 @@ import { usePoll } from "@/lib/hooks";
 import { useTerminal } from "@/lib/stream/store";
 
 import { useControls } from "./controls-store";
-import { describeError, type ErrorDescription } from "./errors";
+import { describeError, type ErrorDescription } from "@/lib/errors";
 
 const POLL_MS = 3_000;
 

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Empty, Panel } from "@/components/ui/Panel";
 import { useApi } from "@/lib/api-context";
+import { usePoll } from "@/lib/hooks";
 
 import { ComparePanel } from "./ComparePanel";
 import { DETAIL_GRID, ExperimentDetail } from "./ExperimentDetail";
@@ -11,7 +12,6 @@ import { ExperimentForm } from "./ExperimentForm";
 import { ExperimentList } from "./ExperimentList";
 import { isActive } from "./format";
 import { ErrorNote } from "./parts";
-import { useResource } from "./useResource";
 
 /**
  * The research view: configure and queue experiments on the left, study the selected one on the
@@ -20,9 +20,11 @@ import { useResource } from "./useResource";
  */
 export function ExperimentDashboard() {
   const api = useApi();
-  const list = useResource("experiments", () => api.listExperiments(), {
-    nextDelay: (experiments) => (experiments.some((e) => isActive(e.status)) ? 1000 : 5000),
-  });
+  const list = usePoll(
+    "experiments",
+    () => api.listExperiments(),
+    (experiments) => (experiments.some((e) => isActive(e.status)) ? 1000 : 5000),
+  );
   const experiments = list.data ?? [];
   // Until one is chosen, the most recent experiment is shown.
   const [chosen, setChosen] = useState<string | null>(null);

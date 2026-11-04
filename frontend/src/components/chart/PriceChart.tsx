@@ -134,28 +134,19 @@ export function PriceChart({ className = "" }: { className?: string }) {
   // stays in use meanwhile, so markers do not blink.
   const generation = simulationId === null ? null : `${simulationId}|${snapshots}`;
   const lastNews = streamedNews.at(-1);
-  const newsKey =
-    generation === null
-      ? null
-      : `${generation}|${streamedNews.length}|${lastNews?.time_seconds ?? ""}`;
-  const [fetchedNews, setFetchedNews] = useState<{ generation: string; items: NewsOut[] }>();
   const newsPoll = usePoll(
-    newsKey,
-    async () => {
-      if (simulationId === null || generation === null) throw new Error("no simulation selected");
-      const items = await api.news(simulationId, NEWS_LIMIT);
-      setFetchedNews({ generation, items });
-      return items;
-    },
+    generation,
+    () =>
+      simulationId === null
+        ? Promise.reject(new Error("no simulation selected"))
+        : api.news(simulationId, NEWS_LIMIT),
     null,
+    `${streamedNews.length}|${lastNews?.time_seconds ?? ""}`,
   );
   useEffect(() => {
     if (newsPoll.error !== null) console.error("news for the chart failed", newsPoll.error);
   }, [newsPoll.error]);
-  const allNews =
-    fetchedNews !== undefined && fetchedNews.generation === generation
-      ? fetchedNews.items
-      : streamedNews;
+  const allNews = newsPoll.data ?? streamedNews;
   const placedNews = useMemo<PlacedNews[]>(() => {
     if (interval === null) return [];
     const placed: PlacedNews[] = [];

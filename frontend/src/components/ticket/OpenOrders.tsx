@@ -8,7 +8,7 @@ import { fmtInt, fmtNumber, fmtSimTime } from "@/lib/format";
 import type { Polled } from "@/lib/hooks";
 import type { OpenOrderOut } from "@/lib/types";
 
-import { describeError, type Problem } from "./errors";
+import { describeError, type ErrorDescription } from "@/lib/errors";
 
 const COLUMNS = "grid grid-cols-[2.4rem_1fr_1fr_1fr_3.4rem] items-center gap-x-2";
 
@@ -26,7 +26,7 @@ export function OpenOrders({
 }) {
   const api = useApi();
   const [cancelling, setCancelling] = useState<number | null>(null);
-  const [problem, setProblem] = useState<Problem | null>(null);
+  const [problem, setProblem] = useState<ErrorDescription | null>(null);
 
   async function cancel(orderId: number) {
     setCancelling(orderId);

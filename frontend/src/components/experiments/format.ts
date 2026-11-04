@@ -2,8 +2,8 @@
  * Display helpers for experiment results: names for the metrics the backend reports, and number
  * formats suited to them. Every value is the backend's; nothing here derives a statistic.
  */
-import { DASH, STRATEGY_LABELS, fmtNumber, fmtSigned } from "../../lib/format";
-import type { ExperimentStatus, Strategy } from "../../lib/types";
+import { DASH, STRATEGY_LABELS, fmtNumber, fmtSigned } from "@/lib/format";
+import type { ExperimentStatus, Strategy } from "@/lib/types";
 
 const METRIC_LABELS: Record<string, string> = {
   trades: "Trades",

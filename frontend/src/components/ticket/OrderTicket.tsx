@@ -11,7 +11,7 @@ import type { MarketState } from "@/lib/stream/reducer";
 import { useSelectedMarket, useTerminal } from "@/lib/stream/store";
 import type { OrderIn, OrderOut } from "@/lib/types";
 
-import { describeError } from "./errors";
+import { describeError } from "@/lib/errors";
 import { OpenOrders } from "./OpenOrders";
 import { TicketResult, type Outcome } from "./TicketResult";
 
@@ -192,8 +192,7 @@ export function OrderTicket() {
   const snapshots = useTerminal((state) => state.snapshots);
   const selected = useSelectedMarket();
   const running = useIsRunning();
-  const key =
-    simulationId === null || symbol === null ? null : `${simulationId}/${symbol}/${snapshots}`;
+  const key = simulationId === null || symbol === null ? null : `${simulationId}/${symbol}`;
   const orders = usePoll(
     key,
     () =>
@@ -201,6 +200,7 @@ export function OrderTicket() {
         ? Promise.resolve([])
         : api.myOrders(simulationId, symbol),
     running ? 1_000 : null,
+    snapshots,
   );
 
   if (simulationId === null || selected === undefined) {

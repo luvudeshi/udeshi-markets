@@ -5,12 +5,12 @@ import { useState } from "react";
 import { Empty, Panel } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/controls";
 import { useApi } from "@/lib/api-context";
+import { usePoll } from "@/lib/hooks";
 import type { ComparisonResultOut, ExperimentOut } from "@/lib/types";
 
 import { fmtDf, fmtDifference, fmtMetric, fmtP, fmtT, metricLabel, pointName } from "./format";
 import { COMPACT_SELECT, ErrorNote } from "./parts";
 import { Th } from "./tables";
-import { useResource } from "./useResource";
 
 /** Two-sided p-values below this are marked significant (a display threshold). */
 const SIGNIFICANCE = 0.05;
@@ -37,8 +37,10 @@ function SidePicker({
 }) {
   const api = useApi();
   const experiment = experiments.find((e) => e.id === side?.id);
-  const detail = useResource(side === null ? null : `compare-points:${side.id}`, () =>
-    api.getExperiment(side?.id ?? ""),
+  const detail = usePoll(
+    side === null ? null : `compare-points:${side.id}`,
+    () => api.getExperiment(side?.id ?? ""),
+    null,
   );
   const labels = new Map((detail.data?.results ?? []).map((p) => [p.point, pointName(p)]));
   const count = experiment?.points ?? 0;

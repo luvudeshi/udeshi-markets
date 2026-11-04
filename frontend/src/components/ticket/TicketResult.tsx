@@ -3,9 +3,10 @@
 import { fmtInt, fmtNumber } from "@/lib/format";
 import type { OrderOut } from "@/lib/types";
 
-import type { Problem } from "./errors";
+import type { ErrorDescription } from "@/lib/errors";
 
-export type Outcome = { kind: "order"; order: OrderOut } | { kind: "error"; problem: Problem };
+export type Outcome =
+  { kind: "order"; order: OrderOut } | { kind: "error"; problem: ErrorDescription };
 
 const STATUS: Record<OrderOut["status"], { label: string; tone: string }> = {
   filled: { label: "Filled", tone: "text-bid border-bid/50 bg-bid-soft" },
@@ -36,6 +37,11 @@ export function TicketResult({ outcome, decimals }: { outcome: Outcome; decimals
       >
         <span className="num text-ask">{outcome.problem.code}</span>
         <span className="text-text"> · {outcome.problem.message}</span>
+        {outcome.problem.lines.map((line) => (
+          <div key={line} className="text-text/80">
+            {line}
+          </div>
+        ))}
       </div>
     );
   }

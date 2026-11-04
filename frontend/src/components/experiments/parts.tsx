@@ -2,8 +2,8 @@
 
 import type { ReactNode } from "react";
 
-import { ApiError } from "../../lib/api";
-import type { ExperimentStatus } from "../../lib/types";
+import { describeError } from "@/lib/errors";
+import type { ExperimentStatus } from "@/lib/types";
 
 const STATUS_LOOK: Record<ExperimentStatus, { text: string; dot: string }> = {
   queued: { text: "text-muted", dot: "bg-muted" },
@@ -59,24 +59,10 @@ export function Progress({
   );
 }
 
-/** An API failure as lines of text: the message, then each validation detail. */
+/** A failure as lines of text: "message (code)", then each validation detail. */
 export function errorLines(error: unknown): string[] {
-  if (error instanceof ApiError) {
-    const lines = [`${error.message} (${error.code})`];
-    if (Array.isArray(error.details)) {
-      for (const detail of error.details) {
-        if (typeof detail === "object" && detail !== null) {
-          const { location, message } = detail as { location?: unknown; message?: unknown };
-          const where = Array.isArray(location)
-            ? location.filter((part) => part !== "body").join(".")
-            : "";
-          lines.push(`${where === "" ? "" : `${where}: `}${String(message ?? "")}`);
-        }
-      }
-    }
-    return lines;
-  }
-  return [error instanceof Error ? error.message : String(error)];
+  const { title, lines } = describeError(error);
+  return [title, ...lines];
 }
 
 export function ErrorNote({ error, testId }: { error: unknown; testId?: string }) {

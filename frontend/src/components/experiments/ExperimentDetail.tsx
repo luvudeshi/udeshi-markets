@@ -5,13 +5,13 @@ import { useState, type ReactNode } from "react";
 import { Empty, Panel } from "@/components/ui/Panel";
 import { Button } from "@/components/ui/controls";
 import { useApi } from "@/lib/api-context";
+import { usePoll } from "@/lib/hooks";
 import type { ExperimentOut } from "@/lib/types";
 
 import { DistributionChart } from "./DistributionChart";
 import { fmtClock, isActive, metricLabel, pointName } from "./format";
 import { COMPACT_SELECT, ErrorNote, Progress, StatusBadge } from "./parts";
 import { PointsTable, SummaryTable } from "./tables";
-import { useResource } from "./useResource";
 
 const PREFERRED_METRIC = "spread_bps";
 const LINK =
@@ -39,15 +39,20 @@ export function ExperimentDetail({
 }) {
   const api = useApi();
   const id = experiment.id;
-  const detail = useResource(`detail:${id}`, () => api.getExperiment(id), {
+  const detail = usePoll(
+    `detail:${id}`,
+    () => api.getExperiment(id),
+    (data) => (isActive(data.status) ? 1000 : null),
     // The list notices cancellations and completions too; the detail then refreshes at once.
-    version: experiment.status,
-    nextDelay: (data) => (isActive(data.status) ? 1000 : null),
-  });
+    experiment.status,
+  );
   const current = detail.data ?? experiment;
-  const runs = useResource(`runs:${id}`, () => api.experimentRuns(id), {
-    version: `${current.status}:${current.runs_done}`,
-  });
+  const runs = usePoll(
+    `runs:${id}`,
+    () => api.experimentRuns(id),
+    null,
+    `${current.status}:${current.runs_done}`,
+  );
 
   const [chosenMetric, setChosenMetric] = useState<string | null>(null);
   const [selectedPoint, setSelectedPoint] = useState(0);

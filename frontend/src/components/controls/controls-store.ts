@@ -4,7 +4,7 @@
  */
 import { create } from "zustand";
 
-import { describeError, type ErrorDescription } from "./errors";
+import { describeError, type ErrorDescription } from "@/lib/errors";
 
 export interface Toast extends ErrorDescription {
   id: number;
