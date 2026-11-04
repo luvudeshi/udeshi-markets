@@ -29,6 +29,7 @@ wheel.packages = ["python/udeshi_markets"]
 [tool.scikit-build.cmake.define]
 UDESHI_BUILD_PYTHON = "ON"
 UDESHI_BUILD_TESTS = "OFF"
+UDESHI_BUILD_BENCHMARKS = "OFF"
 # The C++ CI builds with -Werror; a pip install on an unknown compiler should not fail on a new
 # warning.
 UDESHI_WARNINGS_AS_ERRORS = "OFF"
