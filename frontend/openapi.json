@@ -1,0 +1,4883 @@
+{
+  "components": {
+    "schemas": {
+      "AgentDetailOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cash": {
+            "title": "Cash",
+            "type": "number"
+          },
+          "equity": {
+            "description": "Cash plus positions at the marks.",
+            "title": "Equity",
+            "type": "number"
+          },
+          "filled_quantity": {
+            "title": "Filled Quantity",
+            "type": "integer"
+          },
+          "fills": {
+            "title": "Fills",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Strategy-specific measures.",
+            "title": "Metrics",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "open_orders": {
+            "items": {
+              "$ref": "#/components/schemas/OpenOrderOut"
+            },
+            "title": "Open Orders",
+            "type": "array"
+          },
+          "orders_submitted": {
+            "title": "Orders Submitted",
+            "type": "integer"
+          },
+          "position_details": {
+            "items": {
+              "$ref": "#/components/schemas/PositionOut"
+            },
+            "title": "Position Details",
+            "type": "array"
+          },
+          "positions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Shares per symbol (negative: short).",
+            "title": "Positions",
+            "type": "object"
+          },
+          "realized_pnl": {
+            "description": "Average-cost P&L of closed positions.",
+            "title": "Realized Pnl",
+            "type": "number"
+          },
+          "recent_orders": {
+            "description": "Its last 50 order reports.",
+            "items": {
+              "$ref": "#/components/schemas/OrderReportOut"
+            },
+            "title": "Recent Orders",
+            "type": "array"
+          },
+          "return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "total_pnl / initial_cash * 100.",
+            "title": "Return Pct"
+          },
+          "sharpe_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per hour, of equity returns between analytics samples (live markets only). None until there are two returns, or with zero variance.",
+            "title": "Sharpe Ratio"
+          },
+          "stats": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentStatsOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "None for the API user and the environment."
+          },
+          "strategy": {
+            "enum": [
+              "random",
+              "market_maker",
+              "momentum",
+              "fundamental",
+              "pairs",
+              "manual",
+              "environment"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
+          "symbols": {
+            "description": "The instruments it trades (all, for the API user).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "total_pnl": {
+            "description": "Equity minus initial cash.",
+            "title": "Total Pnl",
+            "type": "number"
+          },
+          "trades": {
+            "description": "Executions booked to its portfolio.",
+            "title": "Trades",
+            "type": "integer"
+          },
+          "unrealized_pnl": {
+            "description": "Open positions at the marks, less their cost.",
+            "title": "Unrealized Pnl",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "strategy",
+          "symbols",
+          "cash",
+          "equity",
+          "total_pnl",
+          "realized_pnl",
+          "unrealized_pnl",
+          "return_pct",
+          "positions",
+          "trades",
+          "orders_submitted",
+          "fills",
+          "filled_quantity",
+          "position_details",
+          "open_orders",
+          "recent_orders",
+          "stats",
+          "metrics"
+        ],
+        "title": "AgentDetailOut",
+        "type": "object"
+      },
+      "AgentMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "average_price": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Average Price",
+            "type": "object"
+          },
+          "fill_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Rate"
+          },
+          "filled_quantity": {
+            "title": "Filled Quantity",
+            "type": "integer"
+          },
+          "max_drawdown": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Drawdown"
+          },
+          "max_drawdown_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Drawdown Pct"
+          },
+          "max_exposure": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Exposure"
+          },
+          "mean_exposure": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Exposure"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "participant_id": {
+            "title": "Participant Id",
+            "type": "integer"
+          },
+          "realized_pnl": {
+            "title": "Realized Pnl",
+            "type": "number"
+          },
+          "return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Pct"
+          },
+          "sharpe_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sharpe Ratio"
+          },
+          "strategy": {
+            "title": "Strategy",
+            "type": "string"
+          },
+          "submitted_quantity": {
+            "title": "Submitted Quantity",
+            "type": "integer"
+          },
+          "total_pnl": {
+            "title": "Total Pnl",
+            "type": "number"
+          },
+          "trades": {
+            "title": "Trades",
+            "type": "integer"
+          },
+          "unrealized_pnl": {
+            "title": "Unrealized Pnl",
+            "type": "number"
+          },
+          "win_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Win Rate"
+          }
+        },
+        "required": [
+          "participant_id",
+          "name",
+          "strategy",
+          "realized_pnl",
+          "unrealized_pnl",
+          "total_pnl",
+          "return_pct",
+          "sharpe_ratio",
+          "max_drawdown",
+          "max_drawdown_pct",
+          "mean_exposure",
+          "max_exposure",
+          "win_rate",
+          "trades",
+          "filled_quantity",
+          "submitted_quantity",
+          "fill_rate"
+        ],
+        "title": "AgentMetrics",
+        "type": "object"
+      },
+      "AgentOut": {
+        "additionalProperties": false,
+        "description": "One participant's standing. Money is in currency, valued at the current marks (the\nmidprice when both sides are quoted, else the last trade, else the reference price).",
+        "properties": {
+          "cash": {
+            "title": "Cash",
+            "type": "number"
+          },
+          "equity": {
+            "description": "Cash plus positions at the marks.",
+            "title": "Equity",
+            "type": "number"
+          },
+          "filled_quantity": {
+            "title": "Filled Quantity",
+            "type": "integer"
+          },
+          "fills": {
+            "title": "Fills",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "orders_submitted": {
+            "title": "Orders Submitted",
+            "type": "integer"
+          },
+          "positions": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Shares per symbol (negative: short).",
+            "title": "Positions",
+            "type": "object"
+          },
+          "realized_pnl": {
+            "description": "Average-cost P&L of closed positions.",
+            "title": "Realized Pnl",
+            "type": "number"
+          },
+          "return_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "total_pnl / initial_cash * 100.",
+            "title": "Return Pct"
+          },
+          "sharpe_ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per hour, of equity returns between analytics samples (live markets only). None until there are two returns, or with zero variance.",
+            "title": "Sharpe Ratio"
+          },
+          "strategy": {
+            "enum": [
+              "random",
+              "market_maker",
+              "momentum",
+              "fundamental",
+              "pairs",
+              "manual",
+              "environment"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          },
+          "symbols": {
+            "description": "The instruments it trades (all, for the API user).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "total_pnl": {
+            "description": "Equity minus initial cash.",
+            "title": "Total Pnl",
+            "type": "number"
+          },
+          "trades": {
+            "description": "Executions booked to its portfolio.",
+            "title": "Trades",
+            "type": "integer"
+          },
+          "unrealized_pnl": {
+            "description": "Open positions at the marks, less their cost.",
+            "title": "Unrealized Pnl",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "strategy",
+          "symbols",
+          "cash",
+          "equity",
+          "total_pnl",
+          "realized_pnl",
+          "unrealized_pnl",
+          "return_pct",
+          "positions",
+          "trades",
+          "orders_submitted",
+          "fills",
+          "filled_quantity"
+        ],
+        "title": "AgentOut",
+        "type": "object"
+      },
+      "AgentStatsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "aggressive_fills": {
+            "title": "Aggressive Fills",
+            "type": "integer"
+          },
+          "cancels_sent": {
+            "title": "Cancels Sent",
+            "type": "integer"
+          },
+          "filled_quantity": {
+            "title": "Filled Quantity",
+            "type": "integer"
+          },
+          "fills": {
+            "title": "Fills",
+            "type": "integer"
+          },
+          "orders_filled": {
+            "title": "Orders Filled",
+            "type": "integer"
+          },
+          "orders_rejected": {
+            "title": "Orders Rejected",
+            "type": "integer"
+          },
+          "orders_submitted": {
+            "title": "Orders Submitted",
+            "type": "integer"
+          },
+          "passive_fills": {
+            "title": "Passive Fills",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "orders_submitted",
+          "orders_rejected",
+          "orders_filled",
+          "cancels_sent",
+          "fills",
+          "filled_quantity",
+          "aggressive_fills",
+          "passive_fills"
+        ],
+        "title": "AgentStatsOut",
+        "type": "object"
+      },
+      "AgentsIn": {
+        "additionalProperties": false,
+        "description": "How many trading agents of each strategy; ``order_frequency`` scales how often they all\nact (2.0: twice as often as the defaults).",
+        "properties": {
+          "fundamental_traders": {
+            "default": 5,
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Fundamental Traders",
+            "type": "integer"
+          },
+          "market_makers": {
+            "default": 5,
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Market Makers",
+            "type": "integer"
+          },
+          "momentum_traders": {
+            "default": 5,
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Momentum Traders",
+            "type": "integer"
+          },
+          "order_frequency": {
+            "default": 1.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 100.0,
+            "title": "Order Frequency",
+            "type": "number"
+          },
+          "pairs_traders": {
+            "default": 1,
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Pairs Traders",
+            "type": "integer"
+          },
+          "random_traders": {
+            "default": 10,
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Random Traders",
+            "type": "integer"
+          }
+        },
+        "title": "AgentsIn",
+        "type": "object"
+      },
+      "AnalyticsOut": {
+        "additionalProperties": false,
+        "description": "Analytics of a live simulation so far (see docs/quantitative-metrics.md). Sampled every\n``interval_seconds`` of simulated time; markouts ``markout_seconds`` after each trade.",
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentMetrics"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "interval_seconds": {
+            "title": "Interval Seconds",
+            "type": "number"
+          },
+          "market": {
+            "items": {
+              "$ref": "#/components/schemas/MarketMetrics"
+            },
+            "title": "Market",
+            "type": "array"
+          },
+          "markout_seconds": {
+            "title": "Markout Seconds",
+            "type": "number"
+          },
+          "microstructure": {
+            "items": {
+              "$ref": "#/components/schemas/MicrostructureMetrics"
+            },
+            "title": "Microstructure",
+            "type": "array"
+          },
+          "samples": {
+            "title": "Samples",
+            "type": "integer"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "time_seconds",
+          "interval_seconds",
+          "markout_seconds",
+          "samples",
+          "market",
+          "microstructure",
+          "agents"
+        ],
+        "title": "AnalyticsOut",
+        "type": "object"
+      },
+      "BarOut": {
+        "additionalProperties": false,
+        "properties": {
+          "close": {
+            "title": "Close",
+            "type": "number"
+          },
+          "end_seconds": {
+            "title": "End Seconds",
+            "type": "number"
+          },
+          "high": {
+            "title": "High",
+            "type": "number"
+          },
+          "low": {
+            "title": "Low",
+            "type": "number"
+          },
+          "open": {
+            "title": "Open",
+            "type": "number"
+          },
+          "start_seconds": {
+            "title": "Start Seconds",
+            "type": "number"
+          },
+          "trade_count": {
+            "title": "Trade Count",
+            "type": "integer"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "integer"
+          },
+          "vwap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vwap"
+          }
+        },
+        "required": [
+          "start_seconds",
+          "end_seconds",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume",
+          "trade_count",
+          "vwap"
+        ],
+        "title": "BarOut",
+        "type": "object"
+      },
+      "CancelOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled_quantity": {
+            "title": "Cancelled Quantity",
+            "type": "integer"
+          },
+          "order_id": {
+            "title": "Order Id",
+            "type": "integer"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "symbol",
+          "cancelled_quantity"
+        ],
+        "title": "CancelOut",
+        "type": "object"
+      },
+      "ComparedOut": {
+        "additionalProperties": false,
+        "properties": {
+          "experiment": {
+            "title": "Experiment",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "point": {
+            "title": "Point",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "experiment",
+          "point",
+          "label"
+        ],
+        "title": "ComparedOut",
+        "type": "object"
+      },
+      "ComparisonOut": {
+        "additionalProperties": false,
+        "properties": {
+          "count_a": {
+            "title": "Count A",
+            "type": "integer"
+          },
+          "count_b": {
+            "title": "Count B",
+            "type": "integer"
+          },
+          "df": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Welch-Satterthwaite degrees of freedom.",
+            "title": "Df"
+          },
+          "difference": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "mean_b - mean_a.",
+            "title": "Difference"
+          },
+          "mean_a": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean A"
+          },
+          "mean_b": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean B"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "p_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Two-sided.",
+            "title": "P Value"
+          },
+          "t": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Welch's t statistic.",
+            "title": "T"
+          }
+        },
+        "required": [
+          "metric",
+          "count_a",
+          "mean_a",
+          "count_b",
+          "mean_b",
+          "difference",
+          "t",
+          "df",
+          "p_value"
+        ],
+        "title": "ComparisonOut",
+        "type": "object"
+      },
+      "ComparisonResultOut": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "$ref": "#/components/schemas/ComparedOut"
+          },
+          "b": {
+            "$ref": "#/components/schemas/ComparedOut"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/ComparisonOut"
+            },
+            "title": "Metrics",
+            "type": "array"
+          }
+        },
+        "required": [
+          "a",
+          "b",
+          "metrics"
+        ],
+        "title": "ComparisonResultOut",
+        "type": "object"
+      },
+      "ExperimentDetailOut": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          },
+          "request": {
+            "$ref": "#/components/schemas/ExperimentIn"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ExperimentPointOut"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "runs_done": {
+            "title": "Runs Done",
+            "type": "integer"
+          },
+          "runs_total": {
+            "title": "Runs Total",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "points",
+          "runs_done",
+          "runs_total",
+          "error",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "request",
+          "results"
+        ],
+        "title": "ExperimentDetailOut",
+        "type": "object"
+      },
+      "ExperimentIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agents": {
+            "$ref": "#/components/schemas/AgentsIn"
+          },
+          "base_seed": {
+            "default": 1,
+            "description": "Run k uses seed base_seed + k.",
+            "maximum": 4.611686018427388e+18,
+            "minimum": 0.0,
+            "title": "Base Seed",
+            "type": "integer"
+          },
+          "duration_seconds": {
+            "default": 300.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 86400.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "initial_cash": {
+            "default": 1000000.0,
+            "maximum": 1000000000000000.0,
+            "minimum": 0.0,
+            "title": "Initial Cash",
+            "type": "number"
+          },
+          "instruments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InstrumentIn"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the five demo assets.",
+            "title": "Instruments"
+          },
+          "market": {
+            "$ref": "#/components/schemas/MarketIn"
+          },
+          "markout_seconds": {
+            "default": 5.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 3600.0,
+            "title": "Markout Seconds",
+            "type": "number"
+          },
+          "name": {
+            "default": "experiment",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "order_latency_ms": {
+            "default": 0.0,
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Order Latency Ms",
+            "type": "number"
+          },
+          "runs": {
+            "default": 10,
+            "description": "Seeds per point.",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "sample_interval_seconds": {
+            "default": 1.0,
+            "maximum": 3600.0,
+            "minimum": 0.01,
+            "title": "Sample Interval Seconds",
+            "type": "number"
+          },
+          "sweep": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "type": "array"
+                },
+                "maxProperties": 5,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Settings to vary, each with its values: one experiment point per combination. Paths: a spec field ('duration_ns', 'order_latency_ns'), 'population.<field>' or 'environment.<field>'.",
+            "title": "Sweep"
+          }
+        },
+        "title": "ExperimentIn",
+        "type": "object"
+      },
+      "ExperimentOut": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "points": {
+            "title": "Points",
+            "type": "integer"
+          },
+          "request": {
+            "$ref": "#/components/schemas/ExperimentIn"
+          },
+          "runs_done": {
+            "title": "Runs Done",
+            "type": "integer"
+          },
+          "runs_total": {
+            "title": "Runs Total",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "status",
+          "points",
+          "runs_done",
+          "runs_total",
+          "error",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "request"
+        ],
+        "title": "ExperimentOut",
+        "type": "object"
+      },
+      "ExperimentPointOut": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "parameters": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Parameters",
+            "type": "object"
+          },
+          "point": {
+            "title": "Point",
+            "type": "integer"
+          },
+          "runs": {
+            "description": "Runs stored so far.",
+            "title": "Runs",
+            "type": "integer"
+          },
+          "summary": {
+            "items": {
+              "$ref": "#/components/schemas/MetricSummaryOut"
+            },
+            "title": "Summary",
+            "type": "array"
+          }
+        },
+        "required": [
+          "point",
+          "label",
+          "parameters",
+          "runs",
+          "summary"
+        ],
+        "title": "ExperimentPointOut",
+        "type": "object"
+      },
+      "FillOut": {
+        "additionalProperties": false,
+        "properties": {
+          "is_aggressor": {
+            "title": "Is Aggressor",
+            "type": "boolean"
+          },
+          "price": {
+            "title": "Price",
+            "type": "number"
+          },
+          "price_ticks": {
+            "title": "Price Ticks",
+            "type": "integer"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "trade_id": {
+            "title": "Trade Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "trade_id",
+          "price",
+          "price_ticks",
+          "quantity",
+          "is_aggressor"
+        ],
+        "title": "FillOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Health": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "Health",
+        "type": "object"
+      },
+      "InstrumentIn": {
+        "additionalProperties": false,
+        "properties": {
+          "reference_price": {
+            "exclusiveMinimum": 0.0,
+            "title": "Reference Price",
+            "type": "number"
+          },
+          "symbol": {
+            "pattern": "^[A-Z0-9][A-Z0-9.\\-]{0,15}$",
+            "title": "Symbol",
+            "type": "string"
+          },
+          "tick_size": {
+            "default": 0.01,
+            "exclusiveMinimum": 0.0,
+            "title": "Tick Size",
+            "type": "number"
+          }
+        },
+        "required": [
+          "symbol",
+          "reference_price"
+        ],
+        "title": "InstrumentIn",
+        "type": "object"
+      },
+      "LevelOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cumulative_quantity": {
+            "description": "Quantity at this level and every better one on its side (market depth).",
+            "title": "Cumulative Quantity",
+            "type": "integer"
+          },
+          "orders": {
+            "title": "Orders",
+            "type": "integer"
+          },
+          "price": {
+            "title": "Price",
+            "type": "number"
+          },
+          "price_ticks": {
+            "title": "Price Ticks",
+            "type": "integer"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "price",
+          "price_ticks",
+          "quantity",
+          "orders",
+          "cumulative_quantity"
+        ],
+        "title": "LevelOut",
+        "type": "object"
+      },
+      "MarketDetailOut": {
+        "additionalProperties": false,
+        "properties": {
+          "ask_depth": {
+            "title": "Ask Depth",
+            "type": "integer"
+          },
+          "best_ask": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Ask"
+          },
+          "best_bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Bid"
+          },
+          "bid_depth": {
+            "title": "Bid Depth",
+            "type": "integer"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change"
+          },
+          "change_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Percent"
+          },
+          "fundamental_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The hidden fundamental value, shown to API observers only: agents never see it (fundamental traders get noisy private signals). None without an environment.",
+            "title": "Fundamental Value"
+          },
+          "high": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High"
+          },
+          "last_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Price"
+          },
+          "low": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Low"
+          },
+          "midprice": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Midprice"
+          },
+          "notional": {
+            "title": "Notional",
+            "type": "number"
+          },
+          "open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open"
+          },
+          "reference_price": {
+            "title": "Reference Price",
+            "type": "number"
+          },
+          "resting_orders": {
+            "title": "Resting Orders",
+            "type": "integer"
+          },
+          "spread": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spread"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "tick_size": {
+            "title": "Tick Size",
+            "type": "number"
+          },
+          "trade_count": {
+            "title": "Trade Count",
+            "type": "integer"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "integer"
+          },
+          "vwap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vwap"
+          }
+        },
+        "required": [
+          "symbol",
+          "tick_size",
+          "reference_price",
+          "last_price",
+          "change",
+          "change_percent",
+          "open",
+          "high",
+          "low",
+          "volume",
+          "trade_count",
+          "vwap",
+          "best_bid",
+          "best_ask",
+          "midprice",
+          "spread",
+          "fundamental_value",
+          "bid_depth",
+          "ask_depth",
+          "resting_orders",
+          "notional"
+        ],
+        "title": "MarketDetailOut",
+        "type": "object"
+      },
+      "MarketIn": {
+        "additionalProperties": false,
+        "description": "The market environment: how hidden fundamental values move and what disturbs them.\nRates are per hour of simulated time; impacts are in log terms (0.01: about 1%).",
+        "properties": {
+          "liquidity_shock_quantity": {
+            "default": 200,
+            "maximum": 1000000000.0,
+            "minimum": 1.0,
+            "title": "Liquidity Shock Quantity",
+            "type": "integer"
+          },
+          "liquidity_shocks_per_hour": {
+            "default": 2.0,
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Liquidity Shocks Per Hour",
+            "type": "number"
+          },
+          "news_impact": {
+            "default": 0.01,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "News Impact",
+            "type": "number"
+          },
+          "news_per_hour": {
+            "default": 6.0,
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "News Per Hour",
+            "type": "number"
+          },
+          "pairs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PairIn"
+                },
+                "maxItems": 25,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cointegrated pairs. Omitted: ACME/NOVA when both exist; [] for none.",
+            "title": "Pairs"
+          },
+          "shock_impact": {
+            "default": 0.005,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Shock Impact",
+            "type": "number"
+          },
+          "shocks_per_hour": {
+            "default": 2.0,
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Shocks Per Hour",
+            "type": "number"
+          },
+          "volatile_multiplier": {
+            "default": 3.0,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Volatile Multiplier",
+            "type": "number"
+          },
+          "volatility": {
+            "default": 0.02,
+            "description": "Log-volatility of fundamentals per sqrt(hour).",
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Volatility",
+            "type": "number"
+          }
+        },
+        "title": "MarketIn",
+        "type": "object"
+      },
+      "MarketMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "last_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Price"
+          },
+          "mean_depth": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Depth"
+          },
+          "mean_imbalance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Imbalance"
+          },
+          "mean_spread": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Spread"
+          },
+          "mean_spread_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Spread Bps"
+          },
+          "one_sided_fraction": {
+            "title": "One Sided Fraction",
+            "type": "number"
+          },
+          "pricing_error_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pricing Error Bps"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "trades": {
+            "title": "Trades",
+            "type": "integer"
+          },
+          "volatility_per_hour": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Volatility Per Hour"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "symbol",
+          "trades",
+          "volume",
+          "last_price",
+          "volatility_per_hour",
+          "mean_spread",
+          "mean_spread_bps",
+          "one_sided_fraction",
+          "mean_depth",
+          "mean_imbalance",
+          "pricing_error_bps"
+        ],
+        "title": "MarketMetrics",
+        "type": "object"
+      },
+      "MarketOut": {
+        "additionalProperties": false,
+        "properties": {
+          "best_ask": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Ask"
+          },
+          "best_bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Bid"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change"
+          },
+          "change_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Change Percent"
+          },
+          "fundamental_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The hidden fundamental value, shown to API observers only: agents never see it (fundamental traders get noisy private signals). None without an environment.",
+            "title": "Fundamental Value"
+          },
+          "high": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "High"
+          },
+          "last_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Price"
+          },
+          "low": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Low"
+          },
+          "midprice": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Midprice"
+          },
+          "open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open"
+          },
+          "reference_price": {
+            "title": "Reference Price",
+            "type": "number"
+          },
+          "spread": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spread"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "tick_size": {
+            "title": "Tick Size",
+            "type": "number"
+          },
+          "trade_count": {
+            "title": "Trade Count",
+            "type": "integer"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "integer"
+          },
+          "vwap": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vwap"
+          }
+        },
+        "required": [
+          "symbol",
+          "tick_size",
+          "reference_price",
+          "last_price",
+          "change",
+          "change_percent",
+          "open",
+          "high",
+          "low",
+          "volume",
+          "trade_count",
+          "vwap",
+          "best_bid",
+          "best_ask",
+          "midprice",
+          "spread",
+          "fundamental_value"
+        ],
+        "title": "MarketOut",
+        "type": "object"
+      },
+      "MetricSummaryOut": {
+        "additionalProperties": false,
+        "properties": {
+          "ci_high": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci High"
+          },
+          "ci_low": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "95% confidence interval for the mean (Student t).",
+            "title": "Ci Low"
+          },
+          "count": {
+            "description": "Runs in which the metric was defined.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean"
+          },
+          "median": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum"
+          },
+          "p05": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P05"
+          },
+          "p95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95"
+          },
+          "stderr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stderr"
+          },
+          "stdev": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stdev"
+          }
+        },
+        "required": [
+          "metric",
+          "count",
+          "mean",
+          "stdev",
+          "stderr",
+          "ci_low",
+          "ci_high",
+          "minimum",
+          "p05",
+          "median",
+          "p95",
+          "maximum"
+        ],
+        "title": "MetricSummaryOut",
+        "type": "object"
+      },
+      "MicrostructureMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "average_trade_size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Trade Size"
+          },
+          "buyer_initiated_fraction": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Initiated Fraction"
+          },
+          "effective_spread_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Spread Bps"
+          },
+          "fill_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Rate"
+          },
+          "measured_trades": {
+            "title": "Measured Trades",
+            "type": "integer"
+          },
+          "price_impact_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Impact Bps"
+          },
+          "realized_spread_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Spread Bps"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "trades_without_markout": {
+            "title": "Trades Without Markout",
+            "type": "integer"
+          },
+          "trades_without_quote": {
+            "title": "Trades Without Quote",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "symbol",
+          "effective_spread_bps",
+          "realized_spread_bps",
+          "price_impact_bps",
+          "measured_trades",
+          "trades_without_quote",
+          "trades_without_markout",
+          "fill_rate",
+          "average_trade_size",
+          "buyer_initiated_fraction"
+        ],
+        "title": "MicrostructureMetrics",
+        "type": "object"
+      },
+      "NewsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "impact": {
+            "description": "Change in the log fundamental value.",
+            "title": "Impact",
+            "type": "number"
+          },
+          "sentiment": {
+            "enum": [
+              "positive",
+              "negative",
+              "neutral"
+            ],
+            "title": "Sentiment",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "time_seconds",
+          "symbol",
+          "impact",
+          "sentiment",
+          "headline"
+        ],
+        "title": "NewsOut",
+        "type": "object"
+      },
+      "OpenOrderOut": {
+        "additionalProperties": false,
+        "properties": {
+          "order_id": {
+            "title": "Order Id",
+            "type": "integer"
+          },
+          "original_quantity": {
+            "title": "Original Quantity",
+            "type": "integer"
+          },
+          "price": {
+            "title": "Price",
+            "type": "number"
+          },
+          "price_ticks": {
+            "title": "Price Ticks",
+            "type": "integer"
+          },
+          "remaining_quantity": {
+            "title": "Remaining Quantity",
+            "type": "integer"
+          },
+          "side": {
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Side",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "order_id",
+          "symbol",
+          "side",
+          "price",
+          "price_ticks",
+          "original_quantity",
+          "remaining_quantity",
+          "time_seconds"
+        ],
+        "title": "OpenOrderOut",
+        "type": "object"
+      },
+      "OrderBookOut": {
+        "additionalProperties": false,
+        "properties": {
+          "asks": {
+            "items": {
+              "$ref": "#/components/schemas/LevelOut"
+            },
+            "title": "Asks",
+            "type": "array"
+          },
+          "best_ask": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Ask"
+          },
+          "best_bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Bid"
+          },
+          "bids": {
+            "items": {
+              "$ref": "#/components/schemas/LevelOut"
+            },
+            "title": "Bids",
+            "type": "array"
+          },
+          "midprice": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Midprice"
+          },
+          "spread": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spread"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "symbol",
+          "time_seconds",
+          "bids",
+          "asks",
+          "best_bid",
+          "best_ask",
+          "midprice",
+          "spread"
+        ],
+        "title": "OrderBookOut",
+        "type": "object"
+      },
+      "OrderIn": {
+        "additionalProperties": false,
+        "properties": {
+          "price": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required for limit orders.",
+            "title": "Price"
+          },
+          "quantity": {
+            "maximum": 1000000000.0,
+            "minimum": 1.0,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "self_trade_prevention": {
+            "default": "allow",
+            "enum": [
+              "allow",
+              "cancel_resting",
+              "cancel_incoming"
+            ],
+            "title": "Self Trade Prevention",
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Side",
+            "type": "string"
+          },
+          "time_in_force": {
+            "default": "gtc",
+            "enum": [
+              "gtc",
+              "ioc"
+            ],
+            "title": "Time In Force",
+            "type": "string"
+          },
+          "type": {
+            "default": "limit",
+            "enum": [
+              "limit",
+              "market"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "side",
+          "quantity"
+        ],
+        "title": "OrderIn",
+        "type": "object"
+      },
+      "OrderOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Reason"
+          },
+          "cancelled_quantity": {
+            "title": "Cancelled Quantity",
+            "type": "integer"
+          },
+          "filled_quantity": {
+            "title": "Filled Quantity",
+            "type": "integer"
+          },
+          "fills": {
+            "items": {
+              "$ref": "#/components/schemas/FillOut"
+            },
+            "title": "Fills",
+            "type": "array"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "reject_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reject Reason"
+          },
+          "resting_quantity": {
+            "title": "Resting Quantity",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "rejected",
+              "resting",
+              "filled",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id",
+          "symbol",
+          "status",
+          "reject_reason",
+          "cancel_reason",
+          "filled_quantity",
+          "resting_quantity",
+          "cancelled_quantity",
+          "fills"
+        ],
+        "title": "OrderOut",
+        "type": "object"
+      },
+      "OrderReportOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Reason"
+          },
+          "cancelled_quantity": {
+            "title": "Cancelled Quantity",
+            "type": "integer"
+          },
+          "filled_quantity": {
+            "title": "Filled Quantity",
+            "type": "integer"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "reject_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reject Reason"
+          },
+          "resting_quantity": {
+            "title": "Resting Quantity",
+            "type": "integer"
+          },
+          "side": {
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Side",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "rejected",
+              "resting",
+              "filled",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "time_in_force": {
+            "enum": [
+              "gtc",
+              "ioc"
+            ],
+            "title": "Time In Force",
+            "type": "string"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          },
+          "type": {
+            "enum": [
+              "limit",
+              "market"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "time_seconds",
+          "order_id",
+          "symbol",
+          "side",
+          "type",
+          "price",
+          "quantity",
+          "time_in_force",
+          "status",
+          "reject_reason",
+          "cancel_reason",
+          "filled_quantity",
+          "resting_quantity",
+          "cancelled_quantity"
+        ],
+        "title": "OrderReportOut",
+        "type": "object"
+      },
+      "PairIn": {
+        "additionalProperties": false,
+        "properties": {
+          "deviation_volatility": {
+            "default": 0.01,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Deviation Volatility",
+            "type": "number"
+          },
+          "follower": {
+            "pattern": "^[A-Z0-9][A-Z0-9.\\-]{0,15}$",
+            "title": "Follower",
+            "type": "string"
+          },
+          "half_life_seconds": {
+            "default": 120.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 604800.0,
+            "title": "Half Life Seconds",
+            "type": "number"
+          },
+          "leader": {
+            "pattern": "^[A-Z0-9][A-Z0-9.\\-]{0,15}$",
+            "title": "Leader",
+            "type": "string"
+          }
+        },
+        "required": [
+          "leader",
+          "follower"
+        ],
+        "title": "PairIn",
+        "type": "object"
+      },
+      "PositionOut": {
+        "additionalProperties": false,
+        "properties": {
+          "average_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average Price"
+          },
+          "bought": {
+            "title": "Bought",
+            "type": "integer"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "realized_pnl": {
+            "title": "Realized Pnl",
+            "type": "number"
+          },
+          "sold": {
+            "title": "Sold",
+            "type": "integer"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "trades": {
+            "title": "Trades",
+            "type": "integer"
+          },
+          "unrealized_pnl": {
+            "title": "Unrealized Pnl",
+            "type": "number"
+          }
+        },
+        "required": [
+          "symbol",
+          "quantity",
+          "average_price",
+          "realized_pnl",
+          "unrealized_pnl",
+          "bought",
+          "sold",
+          "trades"
+        ],
+        "title": "PositionOut",
+        "type": "object"
+      },
+      "RunOut": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Metrics",
+            "type": "object"
+          },
+          "parameters": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Parameters",
+            "type": "object"
+          },
+          "point": {
+            "title": "Point",
+            "type": "integer"
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "wall_seconds": {
+            "description": "Measured: informational, not a metric.",
+            "title": "Wall Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "point",
+          "label",
+          "seed",
+          "parameters",
+          "metrics",
+          "digest",
+          "wall_seconds"
+        ],
+        "title": "RunOut",
+        "type": "object"
+      },
+      "SimulationCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "agents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentsIn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Trading agents. Omitted: none (only the API user trades)."
+          },
+          "bar_interval_seconds": {
+            "default": 1.0,
+            "maximum": 604800.0,
+            "minimum": 0.001,
+            "title": "Bar Interval Seconds",
+            "type": "number"
+          },
+          "duration_seconds": {
+            "default": 1800.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 604800.0,
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "initial_cash": {
+            "default": 1000000.0,
+            "description": "Starting cash of every participant.",
+            "maximum": 1000000000000000.0,
+            "minimum": 0.0,
+            "title": "Initial Cash",
+            "type": "number"
+          },
+          "instruments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/InstrumentIn"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Defaults to the five demo assets.",
+            "title": "Instruments"
+          },
+          "market": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketIn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The market environment. Omitted: the defaults if agents are requested, otherwise none (no fundamental values, nothing exogenous)."
+          },
+          "order_latency_ms": {
+            "default": 0.0,
+            "maximum": 60000.0,
+            "minimum": 0.0,
+            "title": "Order Latency Ms",
+            "type": "number"
+          },
+          "seed": {
+            "default": 1,
+            "exclusiveMaximum": 1.8446744073709552e+19,
+            "minimum": 0.0,
+            "title": "Seed",
+            "type": "integer"
+          },
+          "speed": {
+            "default": 1.0,
+            "description": "Simulated seconds per second.",
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000.0,
+            "title": "Speed",
+            "type": "number"
+          }
+        },
+        "title": "SimulationCreate",
+        "type": "object"
+      },
+      "SimulationOut": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "agents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentsIn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The agent population (None: no agents)."
+          },
+          "bar_interval_seconds": {
+            "title": "Bar Interval Seconds",
+            "type": "number"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "duration_seconds": {
+            "title": "Duration Seconds",
+            "type": "number"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set if the live runner failed.",
+            "title": "Error"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "initial_cash": {
+            "title": "Initial Cash",
+            "type": "number"
+          },
+          "market": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketIn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The market environment (None: none)."
+          },
+          "order_latency_ms": {
+            "title": "Order Latency Ms",
+            "type": "number"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "number"
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "speed": {
+            "title": "Speed",
+            "type": "number"
+          },
+          "state": {
+            "enum": [
+              "created",
+              "running",
+              "paused",
+              "stopped",
+              "completed",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SimulationSummaryOut"
+          },
+          "symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Symbols",
+            "type": "array"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "active",
+          "created_at",
+          "time_seconds",
+          "duration_seconds",
+          "progress",
+          "speed",
+          "seed",
+          "order_latency_ms",
+          "bar_interval_seconds",
+          "symbols",
+          "initial_cash",
+          "agents",
+          "market",
+          "summary"
+        ],
+        "title": "SimulationOut",
+        "type": "object"
+      },
+      "SimulationSummaryOut": {
+        "additionalProperties": false,
+        "properties": {
+          "cancels_requested": {
+            "title": "Cancels Requested",
+            "type": "integer"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "events_processed": {
+            "title": "Events Processed",
+            "type": "integer"
+          },
+          "orders_rejected": {
+            "title": "Orders Rejected",
+            "type": "integer"
+          },
+          "orders_submitted": {
+            "title": "Orders Submitted",
+            "type": "integer"
+          },
+          "trades": {
+            "title": "Trades",
+            "type": "integer"
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events_processed",
+          "orders_submitted",
+          "orders_rejected",
+          "cancels_requested",
+          "trades",
+          "volume",
+          "digest"
+        ],
+        "title": "SimulationSummaryOut",
+        "type": "object"
+      },
+      "SpeedIn": {
+        "additionalProperties": false,
+        "properties": {
+          "speed": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000.0,
+            "title": "Speed",
+            "type": "number"
+          }
+        },
+        "required": [
+          "speed"
+        ],
+        "title": "SpeedIn",
+        "type": "object"
+      },
+      "StepIn": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "default": 1,
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Events",
+            "type": "integer"
+          }
+        },
+        "title": "StepIn",
+        "type": "object"
+      },
+      "TradeOut": {
+        "additionalProperties": false,
+        "properties": {
+          "aggressor_side": {
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Aggressor Side",
+            "type": "string"
+          },
+          "buyer": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The buying participant's id: the observer's view, which agents never see (their tape is anonymous). None only for a trade too old to be recorded.",
+            "title": "Buyer"
+          },
+          "price": {
+            "title": "Price",
+            "type": "number"
+          },
+          "price_ticks": {
+            "title": "Price Ticks",
+            "type": "integer"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "seller": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The selling participant's id, as for ``buyer``.",
+            "title": "Seller"
+          },
+          "time_seconds": {
+            "title": "Time Seconds",
+            "type": "number"
+          },
+          "trade_id": {
+            "title": "Trade Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "trade_id",
+          "time_seconds",
+          "price",
+          "price_ticks",
+          "quantity",
+          "aggressor_side",
+          "buyer",
+          "seller"
+        ],
+        "title": "TradeOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Simulated electronic exchange: market data, simulation control, manual order entry, live WebSocket streams, analytics and experiments.",
+    "title": "Udeshi Markets API",
+    "version": "0.2.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/agents": {
+      "get": {
+        "description": "Every participant (agents, the API user and the market environment), in id order, with\ncash, positions and P&L at the current marks.",
+        "operationId": "list_agents_api_agents_get",
+        "parameters": [
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentOut"
+                  },
+                  "title": "Response List Agents Api Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agents",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}": {
+      "get": {
+        "description": "One participant in detail: positions, open orders, recent orders, statistics and its\nstrategy's own measures.",
+        "operationId": "get_agent_api_agents__agent_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/experiments": {
+      "get": {
+        "operationId": "list_experiments_api_experiments_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ExperimentOut"
+                  },
+                  "title": "Response List Experiments Api Experiments Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Experiments",
+        "tags": [
+          "experiments"
+        ]
+      },
+      "post": {
+        "description": "Queues the experiment and returns at once; poll it for progress and results.",
+        "operationId": "create_experiment_api_experiments_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExperimentIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperimentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Experiment",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/experiments/compare": {
+      "get": {
+        "description": "Metric by metric: both means and Welch's t-test of their difference.",
+        "operationId": "compare_experiments_api_experiments_compare_get",
+        "parameters": [
+          {
+            "description": "First experiment id.",
+            "in": "query",
+            "name": "a",
+            "required": true,
+            "schema": {
+              "description": "First experiment id.",
+              "title": "A",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Second experiment id.",
+            "in": "query",
+            "name": "b",
+            "required": true,
+            "schema": {
+              "description": "Second experiment id.",
+              "title": "B",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "point_a",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Point A",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "point_b",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Point B",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComparisonResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compare Experiments",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/experiments/compare.csv": {
+      "get": {
+        "operationId": "compare_experiments_csv_api_experiments_compare_csv_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "a",
+            "required": true,
+            "schema": {
+              "title": "A",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "b",
+            "required": true,
+            "schema": {
+              "title": "B",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "point_a",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Point A",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "point_b",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Point B",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compare Experiments Csv",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/experiments/{experiment_id}": {
+      "delete": {
+        "operationId": "delete_experiment_api_experiments__experiment_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Experiment",
+        "tags": [
+          "experiments"
+        ]
+      },
+      "get": {
+        "description": "Status, progress and, per point, a summary of every metric over the runs stored so far.",
+        "operationId": "get_experiment_api_experiments__experiment_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperimentDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Experiment",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/experiments/{experiment_id}/cancel": {
+      "post": {
+        "description": "Stops every run not yet started. Finished experiments are left as they are.",
+        "operationId": "cancel_experiment_api_experiments__experiment_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExperimentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Experiment",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/experiments/{experiment_id}/runs": {
+      "get": {
+        "operationId": "list_runs_api_experiments__experiment_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunOut"
+                  },
+                  "title": "Response List Runs Api Experiments  Experiment Id  Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/experiments/{experiment_id}/runs.csv": {
+      "get": {
+        "operationId": "runs_csv_api_experiments__experiment_id__runs_csv_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Runs Csv",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/experiments/{experiment_id}/summary.csv": {
+      "get": {
+        "operationId": "summary_csv_api_experiments__experiment_id__summary_csv_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "experiment_id",
+            "required": true,
+            "schema": {
+              "title": "Experiment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Summary Csv",
+        "tags": [
+          "experiments"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/markets": {
+      "get": {
+        "operationId": "list_markets_api_markets_get",
+        "parameters": [
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MarketOut"
+                  },
+                  "title": "Response List Markets Api Markets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Markets",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{symbol}": {
+      "get": {
+        "operationId": "get_market_api_markets__symbol__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Market",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{symbol}/history": {
+      "get": {
+        "description": "Closed OHLCV bars, oldest first. ``interval_seconds`` must be a whole multiple of the\nsimulation's bar interval (the default).",
+        "operationId": "get_history_api_markets__symbol__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "interval_seconds",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0,
+                  "maximum": 604800,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Interval Seconds"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 10000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BarOut"
+                  },
+                  "title": "Response Get History Api Markets  Symbol  History Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get History",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{symbol}/orderbook": {
+      "get": {
+        "operationId": "get_order_book_api_markets__symbol__orderbook_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "depth",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Depth",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderBookOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Order Book",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{symbol}/orders": {
+      "get": {
+        "description": "Your (the API user's) resting orders in this market.",
+        "operationId": "list_open_orders_api_markets__symbol__orders_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OpenOrderOut"
+                  },
+                  "title": "Response List Open Orders Api Markets  Symbol  Orders Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Open Orders",
+        "tags": [
+          "markets"
+        ]
+      },
+      "post": {
+        "description": "Submits an order as the API user, processed immediately at the current simulated time.",
+        "operationId": "submit_order_api_markets__symbol__orders_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Order",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{symbol}/orders/{order_id}": {
+      "delete": {
+        "description": "Cancels one of your resting orders.",
+        "operationId": "cancel_order_api_markets__symbol__orders__order_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "maximum": 18446744073709551615,
+              "minimum": 1,
+              "title": "Order Id",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Order",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{symbol}/trades": {
+      "get": {
+        "description": "The tape, oldest first, with each trade's buyer and seller: the observer's view (agents\nsee an anonymous tape). No order ids.",
+        "operationId": "get_trades_api_markets__symbol__trades_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "title": "Symbol",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TradeOut"
+                  },
+                  "title": "Response Get Trades Api Markets  Symbol  Trades Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Trades",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/news": {
+      "get": {
+        "description": "Published news, oldest first (unannounced shocks never appear here).",
+        "operationId": "list_news_api_news_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Defaults to the active (most recently created) simulation.",
+            "in": "query",
+            "name": "simulation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Defaults to the active (most recently created) simulation.",
+              "title": "Simulation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/NewsOut"
+                  },
+                  "title": "Response List News Api News Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List News",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/simulations": {
+      "get": {
+        "operationId": "list_simulations_api_simulations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SimulationOut"
+                  },
+                  "title": "Response List Simulations Api Simulations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Simulations",
+        "tags": [
+          "simulations"
+        ]
+      },
+      "post": {
+        "operationId": "create_simulation_api_simulations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SimulationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Simulation",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}": {
+      "delete": {
+        "operationId": "delete_simulation_api_simulations__simulation_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Simulation",
+        "tags": [
+          "simulations"
+        ]
+      },
+      "get": {
+        "operationId": "get_simulation_api_simulations__simulation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Simulation",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/analytics": {
+      "get": {
+        "description": "Market, microstructure and per-agent metrics of the run so far (simulations with agents\nor a market environment). Live sampling happens as the runner advances: markouts are read at\nthe first sampling stop at or after their horizon.",
+        "operationId": "get_analytics_api_simulations__simulation_id__analytics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Analytics",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/pause": {
+      "post": {
+        "operationId": "pause_api_simulations__simulation_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/reset": {
+      "post": {
+        "operationId": "reset_api_simulations__simulation_id__reset_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/resume": {
+      "post": {
+        "operationId": "resume_api_simulations__simulation_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/speed": {
+      "post": {
+        "operationId": "set_speed_api_simulations__simulation_id__speed_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeedIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Speed",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/start": {
+      "post": {
+        "operationId": "start_api_simulations__simulation_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/step": {
+      "post": {
+        "operationId": "step_api_simulations__simulation_id__step_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Step",
+        "tags": [
+          "simulations"
+        ]
+      }
+    },
+    "/api/simulations/{simulation_id}/stop": {
+      "post": {
+        "operationId": "stop_api_simulations__simulation_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "simulation_id",
+            "required": true,
+            "schema": {
+              "title": "Simulation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimulationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop",
+        "tags": [
+          "simulations"
+        ]
+      }
+    }
+  }
+}

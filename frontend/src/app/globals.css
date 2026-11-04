@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+/* One dark palette, used through Tailwind utilities: bg-panel, border-line, text-muted, … */
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --color-bg: #07090c;
+  --color-panel: #0b0e12;
+  --color-raised: #10141a;
+  --color-hover: #151a21;
+  --color-line: #1a2028;
+  --color-line-strong: #262e38;
+
+  --color-text: #d3d9e0;
+  --color-muted: #7d8896;
+  --color-faint: #4a5562;
+
+  --color-bid: #2fb98a;
+  --color-bid-soft: rgb(47 185 138 / 0.14);
+  --color-ask: #ef5260;
+  --color-ask-soft: rgb(239 82 96 / 0.14);
+  --color-accent: #e2a640;
+  --color-accent-soft: rgb(226 166 64 / 0.14);
+  --color-info: #5aa2e0;
+  --color-info-soft: rgb(90 162 224 / 0.14);
+
+  --text-2xs: 0.625rem;
+  --text-2xs--line-height: 0.875rem;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-bg text-text font-sans text-xs antialiased;
+    font-feature-settings: "ss01" on;
+  }
+  ::selection {
+    @apply bg-accent-soft;
+  }
+  :focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  /* Quiet scrollbars inside dense panels. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    margin: 0;
+    -webkit-appearance: none;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+}
+
+@utility num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@utility label-caps {
+  font-size: var(--text-2xs);
+  line-height: var(--text-2xs--line-height);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  font-weight: 500;
+}
