@@ -39,7 +39,7 @@ Settings come from environment variables:
 
   | Status | Codes |
   | --- | --- |
-  | 404 | `unknown_simulation`, `no_active_simulation`, `unknown_symbol`, `order_not_found`, `not_found` |
+  | 404 | `unknown_simulation`, `no_active_simulation`, `unknown_symbol`, `order_not_found`, `unknown_agent`, `not_found` |
   | 409 | `invalid_state` (e.g. pausing a simulation that is not running) |
   | 405 | `http_error`, with an `Allow` header listing every method of the path |
   | 422 | `validation_error` (with per-field `details`; also for infinities, NaN and out-of-range ids), `invalid_configuration` (including a bar budget above `UDESHI_MAX_BARS`), `invalid_price`, `invalid_interval` |
@@ -52,8 +52,8 @@ Settings come from environment variables:
 | Method & path | Body | Description |
 | --- | --- | --- |
 | `GET /api/simulations` | — | All simulations held in memory. |
-| `POST /api/simulations` | `SimulationCreate` | Creates a simulation (201) and makes it active. All fields are optional: `instruments` (`symbol`, `reference_price`, `tick_size`; defaults to ACME, NOVA, QUANT, ORBIT, VECTOR), `duration_seconds`, `seed`, `order_latency_ms`, `bar_interval_seconds` (at least 0.001), `speed`. Sessions beyond `UDESHI_MAX_SESSIONS` are evicted: stopped or completed ones first, then the oldest; never the active one. |
-| `GET /api/simulations/{id}` | — | State (`created`, `running`, `paused`, `stopped`, `completed` or `failed`, with `error` set), simulated time, progress, speed, configuration, counters and run digest. |
+| `POST /api/simulations` | `SimulationCreate` | Creates a simulation (201) and makes it active. All fields are optional: `instruments` (`symbol`, `reference_price`, `tick_size`; defaults to ACME, NOVA, QUANT, ORBIT, VECTOR), `duration_seconds`, `seed`, `order_latency_ms`, `bar_interval_seconds` (at least 0.001), `speed`, `initial_cash` (every participant's starting cash; default 1,000,000), and `agents` and `market` (see [Agents and market](#agents-and-market)). Sessions beyond `UDESHI_MAX_SESSIONS` are evicted: stopped or completed ones first, then the oldest; never the active one. |
+| `GET /api/simulations/{id}` | — | State (`created`, `running`, `paused`, `stopped`, `completed` or `failed`, with `error` set), simulated time, progress, speed, configuration (including the effective `initial_cash`, `agents` and `market`), counters and run digest. |
 | `DELETE /api/simulations/{id}` | — | Stops the simulation and drops it (204). Stream clients receive `{"type": "closed"}`. |
 | `POST /api/simulations/{id}/start` · `pause` · `resume` · `stop` · `reset` | — | Lifecycle transitions (409 when not allowed). |
 | `POST /api/simulations/{id}/speed` | `{"speed": 10}` | Simulated seconds per wall-clock second. |
@@ -63,7 +63,7 @@ Settings come from environment variables:
 
 | Method & path | Description |
 | --- | --- |
-| `GET /api/markets` | Summary per market: last, change, change %, OHLC, volume, VWAP, best bid/ask, mid, spread. |
+| `GET /api/markets` | Summary per market: last, change, change %, OHLC, volume, VWAP, best bid/ask, mid, spread, and `fundamental_value` (see below). |
 | `GET /api/markets/{symbol}` | Summary plus depth totals, resting order count, notional. |
 | `GET /api/markets/{symbol}/orderbook?depth=10` | Aggregated levels (price, quantity, order count) per side, best first. |
 | `GET /api/markets/{symbol}/trades?limit=50` | Public tape, oldest first. No order ids or trader identities. |
@@ -75,14 +75,57 @@ Settings come from environment variables:
 The API user is a participant of the simulation, with id `1000000`. Its orders go through the
 same kernel path, digest and ownership checks as any agent's.
 
+`fundamental_value` is the market environment's hidden value of the instrument, in currency:
+the reference price before the start, `null` without an environment. It is the *observer's*
+view, for charts and research. Agents never see it: fundamental traders get noisy private
+signals, and everyone else sees only prices and news.
+
+### Agents and market
+
+`POST /api/simulations` accepts two optional objects. Without either, the API user trades
+alone, exactly as in a plain simulation.
+
+* **`agents`**: counts per strategy, `random_traders` (default 10), `market_makers` (5),
+  `momentum_traders` (5), `fundamental_traders` (5) and `pairs_traders` (1), at most 500 in
+  total, plus `order_frequency` (default 1.0; 2.0 makes every agent act twice as often). Agents
+  get ids 1, 2, … in this order: market makers, random, momentum, fundamental, then pairs
+  traders. Each is assigned an instrument round-robin; a pairs trader gets a pair.
+* **`market`**: the environment that moves fundamental values. Fields: `volatility` (per
+  √hour, default 0.02), `volatile_multiplier` (3), `news_per_hour` (6, per instrument),
+  `news_impact` (0.01, mean log impact), `shocks_per_hour` (2; unannounced jumps),
+  `shock_impact` (0.005), `liquidity_shocks_per_hour` (2; forced market orders),
+  `liquidity_shock_quantity` (200), and `pairs`: a list of
+  `{leader, follower, half_life_seconds, deviation_volatility}` for cointegrated pairs. If
+  `pairs` is omitted, the default is ACME/NOVA when both symbols exist, and no pair otherwise;
+  `[]` means no pairs.
+
+`agents` without `market` uses the default environment. `market` without `agents` gives a market
+with fundamental values and exogenous events, but only the API user trading. These requests get
+422 `invalid_configuration`: pairs traders with no pair, a pair naming an unknown symbol or the
+same symbol twice, and an instrument following two leaders.
+
+| Method & path | Description |
+| --- | --- |
+| `GET /api/agents` | Every participant, in id order: the agents, the market environment (id `999999`, strategy `environment`; its trades are the liquidity shocks) and the API user (id `1000000`, strategy `manual`). Each has `strategy`, `symbols`, `cash`, `equity`, `total_pnl`, `realized_pnl`, `unrealized_pnl`, `return_pct`, `positions` (shares per symbol), `trades`, `orders_submitted`, `fills` and `filled_quantity`. |
+| `GET /api/agents/{id}` | The same, plus `position_details` (quantity, average price, realized and unrealized P&L, shares bought and sold), `open_orders`, its last 50 order reports (`recent_orders`), `stats` (orders, rejections, cancels, fills, aggressive and passive fills; `null` for the user and the environment) and the strategy's own `metrics`: for a market maker `spread_earned`, `adverse_selection` and `markouts_measured`; for a pairs trader its last `z_score`; for the environment its news, shock and regime counts. |
+| `GET /api/news?limit=50` | Published news, oldest first: `time_seconds`, `symbol`, `impact` (the change in the log fundamental), `sentiment` (`positive` or `negative`) and `headline`. Unannounced shocks never appear. |
+
+**Accounting.** Cash and positions come from the kernel's portfolios, which book every
+execution exactly (with rational numbers) and use average-cost realized P&L. Positions are valued
+at the mark: the midprice when both sides are quoted, else the last trade, else the reference
+price. Across all participants, cash adds up to the total initial cash, positions to zero, and
+P&L to zero: trading moves money and shares between participants but never creates them.
+
 ## WebSocket stream
 
 `GET /api/simulations/{id}/stream?symbols=ACME,NOVA` (WebSocket)
 
 1. **Snapshot first.** On connect the server sends one `snapshot` message:
    `{"type": "snapshot", "simulation": {...status...}, "markets": [{"symbol", "book", "market",
-   "trades", "bars"}]}`, with the 100 most recent trades and closed bars per subscribed symbol.
-   A client replaces everything it holds with a snapshot.
+   "trades", "bars"}], "agents": [...], "news": [...]}`. It carries the 100 most recent trades
+   and closed bars per subscribed symbol, every participant as in `GET /api/agents`, and the 20
+   most recent news items for the subscribed symbols. A client replaces everything it holds with
+   a snapshot.
 2. **Then incremental updates, once per runner tick, only when something changed:**
 
    | `type` | Payload |
@@ -92,6 +135,8 @@ same kernel path, digest and ownership checks as any agent's.
    | `market` | The market summary for that symbol. |
    | `trades` | `symbol` and the new public trades. |
    | `bars` | `symbol`, the newly closed OHLCV bars, and `omitted`. A jump in simulated time (a step to the end, a fast tick) can close many bars at once: the message carries the newest 1,000 and counts the rest in `omitted`; the history endpoint has them all. |
+   | `news` | One published news item (the fields of `GET /api/news`), for subscribed symbols. It comes before the book and trade updates of the same tick. |
+   | `agents` | The leaderboard: every participant, as in `GET /api/agents`. Sent at most once per second of wall time, only when something in it changed, and only for simulations with agents or a market environment. |
    | `closed` | The simulation was deleted; the server then closes the socket. |
 
 3. **No silent gaps.** Each client has a bounded buffer, so a slow client cannot stall the
