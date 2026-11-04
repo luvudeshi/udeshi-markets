@@ -18,7 +18,9 @@ import { usePoll } from "@/lib/hooks";
 import { useTerminal } from "@/lib/stream/store";
 import type { AnalyticsOut, MarketOut } from "@/lib/types";
 
-const ANALYTICS_MS = 2_000;
+// The analytics are recomputed over the whole run on every request (about 35 ms at 30
+// simulated minutes, growing with the run), so they are polled less often than the rest.
+const ANALYTICS_MS = 5_000;
 const SUMMARY_MS = 1_500;
 
 const TH =
@@ -97,7 +99,11 @@ export function MarketOverview({ className = "" }: { className?: string }) {
                 <th scope="col" className={`${TH} text-right`}>
                   Last
                 </th>
-                <th scope="col" className={`${TH} text-right`} title="Change since the open">
+                <th
+                  scope="col"
+                  className={`${TH} text-right`}
+                  title="Change from the reference price"
+                >
                   Chg
                 </th>
                 <th scope="col" className={`${TH} text-right`} title="Shares traded">

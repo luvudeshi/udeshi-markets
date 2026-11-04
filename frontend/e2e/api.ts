@@ -8,10 +8,12 @@ import { API_URL } from "../playwright.config";
  * test steps it, so what the page shows is reproducible. */
 export const FROZEN = 1e-9;
 
+/** Long enough that stepping it by the default 20,000 events (about 1,000 simulated seconds)
+ * leaves it paused mid-run, still accepting orders. */
 export const SMALL_MARKET: SimulationCreate = {
   seed: 7,
   speed: FROZEN,
-  duration_seconds: 600,
+  duration_seconds: 3_600,
   agents: {
     random_traders: 4,
     market_makers: 2,
