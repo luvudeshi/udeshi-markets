@@ -123,11 +123,11 @@ class ParticipantViews:
         portfolio = simulation.portfolio(pid)
         symbols = simulation.config.symbols
         details = [portfolio.details(i) for i in range(len(symbols))]
-        values = [self._value(i, d.quantity, marks) for i, d in enumerate(details)]
-        equity = portfolio.cash + sum(values, Fraction(0))
-        unrealized = sum((v - d.cost for v, d in zip(values, details, strict=True)), Fraction(0))
+        # Valuation is the portfolio's own (one implementation, in the simulation layer).
+        equity = portfolio.equity(marks)
+        unrealized = portfolio.unrealized_pnl(marks)
         initial = portfolio.initial_cash
-        total = equity - initial
+        total = portfolio.total_pnl(marks)
         orders_submitted, fills = _activity(participant, sum(d.trades for d in details))
         return {
             "id": pid,
