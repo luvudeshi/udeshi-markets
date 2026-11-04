@@ -1,0 +1,8 @@
+# Never upload local secrets or build and test output.
+.env*.local
+node_modules
+.next
+out
+test-results
+playwright-report
+blob-report

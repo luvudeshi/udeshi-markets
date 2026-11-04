@@ -1,0 +1,24 @@
+# Render Blueprint for the API (the terminal is deployed on Vercel; see docs/deployment.md).
+#   Render dashboard -> New -> Blueprint -> this repository.
+# The image is backend/Dockerfile: it compiles the C++ engine and runs the FastAPI service.
+services:
+  - type: web
+    name: udeshi-markets-api
+    runtime: docker
+    plan: free
+    branch: main
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      # The image listens on 8000 (UDESHI_PORT); Render routes traffic to PORT.
+      - key: PORT
+        value: "8000"
+      # The terminal's origin: the browser calls the API from it, REST and WebSocket.
+      - key: UDESHI_CORS_ORIGINS
+        value: https://udeshi-markets.vercel.app
+      # A free instance has 512 MB: few live simulations, one experiment worker process.
+      - key: UDESHI_MAX_SESSIONS
+        value: "4"
+      - key: UDESHI_EXPERIMENT_WORKERS
+        value: "1"
