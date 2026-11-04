@@ -18,12 +18,12 @@ flowchart TB
         SIM["Discrete-event simulation kernel<br/>event queue · simulated clock · recorder · digest"]
         ENV["Market environment<br/>fundamentals · news · volatility regimes"]
         AG["Trading agents<br/>random · market maker · momentum · fundamental · pairs"]
-        AN["Analytics (Phase 4)<br/>market · agent · microstructure metrics"]
-        XP["Experiment runner (Phase 4)<br/>Monte Carlo · parameter sweeps · CSV"]
+        AN["Analytics<br/>market · agent · microstructure metrics"]
+        XP["Experiment runner<br/>Monte Carlo · parameter sweeps · CSV"]
         API["FastAPI service<br/>REST · WebSocket · live runner"]
     end
 
-    subgraph Data["Persistence (Phase 4)"]
+    subgraph Data["Persistence"]
         PG[("PostgreSQL<br/>runs · trades · metrics")]
     end
 
@@ -45,8 +45,7 @@ flowchart TB
     API <-->|REST / WebSocket| FE
 ```
 
-The engine, the bindings, the simulation kernel, the market environment, the trading agents and
-the API exist today. Components labelled with a later phase are planned.
+Everything except the frontend (Phase 5) exists today.
 
 ## Layering rules
 
@@ -116,7 +115,9 @@ udeshi-markets/
 │   ├── udeshi_markets/                 Python package: engine API, type stubs
 │   │   ├── simulation/                 kernel, events, participants, recorder, RNG, config,
 │   │   │                               market environment, portfolio accounting
-│   │   └── agents/                     agent framework, five strategies, population builder
+│   │   ├── agents/                     agent framework, five strategies, population builder
+│   │   ├── analytics/                  observer, statistics, market / agent / microstructure
+│   │   └── experiments/                specs, sweeps, Monte Carlo, comparison, CSV export
 │   └── tests/                          pytest: bindings, stubs, RNG, recorder, kernel
 ├── backend/
 │   ├── udeshi_api/                     FastAPI app: routes, sessions, runner, stream hub
@@ -132,8 +133,7 @@ udeshi-markets/
     └── mutation.yml                    weekly mutation run on Linux and macOS
 ```
 
-Later phases add analytics and experiments (under `python/udeshi_markets/`), `frontend/`
-(Next.js) and `bench/` (benchmarks).
+Later phases add `frontend/` (Next.js) and `bench/` (benchmarks).
 
 ## Phase status
 
@@ -142,7 +142,7 @@ Later phases add analytics and experiments (under `python/udeshi_markets/`), `fr
 | 1 | C++ matching engine, price-time priority, cancellation, tests | Done |
 | 2 | pybind11 bindings, exchange API, discrete-event loop | Done |
 | 3 | Trading agents, market dynamics, portfolio accounting | Done |
-| 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Planned |
+| 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Done |
 | 5 | Frontend, WebSockets, visualisations | Planned |
 | 6 | Benchmarks, profiling, optimisation, docs | Planned |
 
@@ -154,5 +154,7 @@ Later phases add analytics and experiments (under `python/udeshi_markets/`), `fr
   determinism and the run digest.
 * [trading-agents.md](trading-agents.md): the strategies, the market environment and portfolio
   accounting, with their mathematics.
+* [quantitative-metrics.md](quantitative-metrics.md) and
+  [market-microstructure.md](market-microstructure.md): every metric's definition.
 * [api.md](api.md): REST endpoints, the WebSocket stream and the error format.
 * [development-log.md](development-log.md): what was built in each phase, and why.

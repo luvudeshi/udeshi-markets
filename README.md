@@ -6,10 +6,14 @@ environment for studying the resulting market behaviour.
 
 > Everything is simulated. No real money, brokerage accounts, or real-world order routing.
 
-**Status:** Phases 1 to 3 of 6 are complete: the matching engine, the Python bindings, the
-discrete-event simulation kernel, the exchange API, and autonomous trading agents in a market
-environment with hidden fundamentals and news. Analytics, experiments and the frontend come
-next; see the [roadmap](docs/architecture.md#phase-status).
+**Status:** Phases 1 to 4 of 6 are complete:
+- the matching engine;
+- the Python bindings, the discrete-event simulation kernel and the exchange API;
+- autonomous trading agents in a market environment with hidden fundamentals and news;
+- quantitative analytics, and an experiment framework with Monte Carlo runs and PostgreSQL
+  persistence.
+
+The frontend and benchmarks come next; see the [roadmap](docs/architecture.md#phase-status).
 
 ## Matching engine (C++20)
 
@@ -81,6 +85,22 @@ Sell 10 @ 101, Sell 5 @ 102, then Buy 12 @ 102
   the tests check it after every market run.
 
 The details are in [docs/trading-agents.md](docs/trading-agents.md).
+
+## Analytics and experiments
+
+- **Metrics** with documented definitions, causal measurement, and undefined values reported as
+  undefined rather than NaN:
+  - market: volatility, spreads, depth, imbalance, and pricing error against fundamentals;
+  - microstructure: effective and realized spread, price impact, fill rates;
+  - agents: P&L, Sharpe ratio, drawdown, exposure, win rate.
+- **Experiments:**
+  - independent seeded runs, Monte Carlo distributions and parameter sweeps;
+  - summaries with Student-t confidence intervals, and Welch comparisons between experiments;
+  - CSV export;
+  - runs in parallel worker processes, with results identical to a sequential run.
+
+Details: [docs/quantitative-metrics.md](docs/quantitative-metrics.md) and
+[docs/market-microstructure.md](docs/market-microstructure.md).
 
 ## Quick start
 
@@ -163,6 +183,24 @@ for pid, agent in simulation.participants.items():
 print(summary.trades, {strategy: round(value) for strategy, value in sorted(pnl.items())})
 ```
 
+An experiment: do more market makers tighten the spread? Five seeds each, compared with Welch's
+t-test:
+
+```python
+from udeshi_markets.agents import PopulationConfig
+from udeshi_markets.experiments import ExperimentSpec, compare, run_experiment
+from udeshi_markets.simulation import MINUTE
+
+few = ExperimentSpec(
+    name="few makers", duration_ns=2 * MINUTE, runs=5, population=PopulationConfig(market_makers=2)
+)
+many = ExperimentSpec(
+    name="many makers", duration_ns=2 * MINUTE, runs=5, population=PopulationConfig(market_makers=10)
+)
+[spread] = compare(run_experiment(few), run_experiment(many), ["spread_bps"])
+print(f"spread {spread.mean_a:.2f} -> {spread.mean_b:.2f} bps, Welch p = {spread.p_value:.4f}")
+```
+
 ## Testing
 
 ```bash
@@ -193,6 +231,7 @@ flowchart LR
 
 Details: [architecture](docs/architecture.md) · [matching engine](docs/matching-engine.md) ·
 [simulation kernel](docs/simulation-engine.md) · [trading agents](docs/trading-agents.md) ·
+[metrics](docs/quantitative-metrics.md) · [microstructure](docs/market-microstructure.md) ·
 [API](docs/api.md) · [development log](docs/development-log.md)
 
 ## Repository layout
@@ -200,7 +239,7 @@ Details: [architecture](docs/architecture.md) · [matching engine](docs/matching
 ```
 engine/          C++20 matching engine: public headers, implementation, GoogleTest suite
 python/          pybind11 bindings and the udeshi_markets package (simulation kernel, market
-                 environment, trading agents), tests
+                 environment, trading agents, analytics, experiments), tests
 backend/         FastAPI service (udeshi_api), tests, Dockerfile
 tools/           mutation testing
 docs/            design documentation

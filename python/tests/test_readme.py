@@ -14,6 +14,7 @@ EXPECTED = [
     "9263 28424 dbcb62714eb57ef0c337fed2bbec35d5\n",
     "3463 {'fundamental': 2038, 'market_maker': -1453, 'momentum': 206, "
     "'pairs': -31, 'random': -760}\n",
+    "spread 10.48 -> 8.83 bps, Welch p = 0.0286\n",
 ]
 
 
