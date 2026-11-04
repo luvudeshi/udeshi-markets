@@ -3,10 +3,10 @@
 #include <cstddef>
 #include <map>
 #include <optional>
-#include <unordered_map>
 #include <vector>
 
 #include "udeshi/order.hpp"
+#include "udeshi/order_index.hpp"
 #include "udeshi/order_pool.hpp"
 #include "udeshi/price_level.hpp"
 #include "udeshi/types.hpp"
@@ -78,7 +78,8 @@ class BookSide {
 
 // Limit order book for a single instrument: resting orders only, no matching logic.
 //
-// Owns every resting Order (via an OrderPool) and indexes them by id for O(1) cancellation.
+// Owns every resting Order (via an OrderPool) and indexes them by id (an OrderIndex) for O(1)
+// cancellation.
 // The mutation primitives each preserve the structural invariants checked by
 // check_invariants(); the MatchingEngine is responsible for the economic invariant that the
 // book is never left crossed (best bid < best ask).
@@ -147,7 +148,7 @@ class OrderBook {
   BookSide bids_{Side::Buy};
   BookSide asks_{Side::Sell};
   OrderPool pool_;
-  std::unordered_map<OrderId, Order*> index_;
+  OrderIndex index_;
 };
 
 }  // namespace udeshi

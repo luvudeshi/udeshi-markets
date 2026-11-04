@@ -19,6 +19,11 @@ namespace {
   return request.owner != kAnonymousTrader && resting.owner == request.owner;
 }
 
+// Room for the trades of a typical aggressive order, reserved at its first trade, so that it
+// allocates once rather than once per doubling (measured: takers in a mixed flow allocated
+// 1.9 times each before; see docs/benchmarking.md).
+constexpr std::size_t kInitialTradeCapacity = 8;
+
 }  // namespace
 
 InstrumentId MatchingEngine::add_instrument() {
@@ -151,6 +156,9 @@ void MatchingEngine::match(OrderBook& book, const OrderRequest& request, OrderId
         continue;
       }
 
+      if (result.trades.empty()) {
+        result.trades.reserve(kInitialTradeCapacity);
+      }
       const Quantity fill = std::min(remaining, resting.remaining_quantity);
       Trade trade;
       trade.id = next_trade_id_++;

@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Turns udeshi_bench's JSON results into the Markdown tables of docs/benchmarking.md.
+
+    tools/bench_report.py RESULTS.json [--baseline BASELINE.json] [--update docs/benchmarking.md]
+
+Without --update the tables are printed. With it, the text between the markers
+``<!-- bench:NAME:start -->`` and ``<!-- bench:NAME:end -->`` in the given file is replaced, for
+NAME in environment, memory, workloads and comparison (the last only with --baseline).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import re
+import sys
+from typing import Any
+
+Result = dict[str, Any]
+
+GROUP_TITLES = {
+    "book_size": "Book size",
+    "price_levels": "Price levels",
+    "patterns": "Submission patterns",
+    "cancellation": "Cancellation",
+    "exchange": "Through the Exchange (matching plus market data)",
+}
+
+
+def millions(value: float) -> str:
+    return f"{value / 1e6:.1f}"
+
+
+def nanoseconds(value: float) -> str:
+    return f"{value:,.0f}"
+
+
+def environment(results: Result) -> str:
+    env = results["environment"]
+    clock = results["clock"]
+    config = results["config"]
+    sizes = results["sizes"]
+    rows = [
+        ("CPU", f"{env['cpu']} ({env['logical_cpus']} logical CPUs)"),
+        ("Memory", f"{env['memory_bytes'] / 2**30:.0f} GiB"),
+        ("OS", env["os"]),
+        ("Compiler", env["compiler"]),
+        ("Build", env["build"]),
+        ("Scheduling", env["scheduling"]),
+        (
+            "Clock",
+            f"`std::chrono::steady_clock`: resolution {clock['resolution_ns']} ns, two "
+            f"consecutive reads {clock['read_overhead_p50_ns']} ns apart (median)",
+        ),
+        ("Repetitions", f"{config['repetitions']} timed replays per workload, after a warm-up"),
+        (
+            "Object sizes",
+            f"`Order` {sizes['order_bytes']} B, `PriceLevel` {sizes['price_level_bytes']} B, "
+            f"`Trade` {sizes['trade_bytes']} B",
+        ),
+    ]
+    lines = ["| | |", "| --- | --- |"]
+    lines += [f"| {name} | {value} |" for name, value in rows]
+    return "\n".join(lines)
+
+
+def memory(results: Result) -> str:
+    lines = [
+        "| Resting orders | Levels per side | Heap bytes per order | Allocations per order "
+        "| RSS growth per order |",
+        "| ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in results["memory"]:
+        lines.append(
+            f"| {row['orders']:,} | {row['levels_per_side']:,} "
+            f"| {row['heap_bytes_per_order']:.1f} | {row['allocations_per_order']:.3f} "
+            f"| {row['rss_bytes_per_order']:.1f} |"
+        )
+    return "\n".join(lines)
+
+
+def workloads(results: Result) -> str:
+    out: list[str] = []
+    by_group: dict[str, list[Result]] = {}
+    for workload in results["workloads"]:
+        by_group.setdefault(workload["group"], []).append(workload)
+    for group, rows in by_group.items():
+        out.append(f"**{GROUP_TITLES.get(group, group)}**\n")
+        out.append(
+            "| Workload | Operations | M ops/s (min–max) | Mean ns | p50 | p95 | p99 | p99.9 "
+            "| Max | Allocations per op |"
+        )
+        out.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        for row in rows:
+            rate = row["ops_per_second"]
+            latency = row["latency"]
+            by_kind = row["by_kind"]
+            operations = sum(kind["latency"]["count"] for kind in by_kind.values())
+            allocations = sum(
+                kind["allocations_per_op"] * kind["latency"]["count"] for kind in by_kind.values()
+            )
+            out.append(
+                f"| `{row['name']}` | {row['measured_ops']:,} "
+                f"| {millions(rate['median'])} ({millions(rate['min'])}–{millions(rate['max'])}) "
+                f"| {nanoseconds(1e9 / rate['median'])} | {latency['p50_ns']} "
+                f"| {latency['p95_ns']} | {latency['p99_ns']} | {latency['p999_ns']} "
+                f"| {latency['max_ns']:,} | {allocations / operations:.2f} |"
+            )
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
+def by_kind(results: Result, name: str) -> str:
+    """Latency per kind of operation, for one workload."""
+    workload = next(w for w in results["workloads"] if w["name"] == name)
+    lines = [
+        "| Operation | Count | Mean ns | p50 | p95 | p99 | p99.9 | Max | Allocations per op |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for kind, data in workload["by_kind"].items():
+        latency = data["latency"]
+        lines.append(
+            f"| {kind} | {latency['count']:,} | {latency['mean_ns']:.1f} | {latency['p50_ns']} "
+            f"| {latency['p95_ns']} | {latency['p99_ns']} | {latency['p999_ns']} "
+            f"| {latency['max_ns']:,} | {data['allocations_per_op']:.2f} |"
+        )
+    return "\n".join(lines)
+
+
+def comparison(results: Result, baseline: Result) -> str:
+    before = {w["name"]: w for w in baseline["workloads"]}
+    lines = [
+        "| Workload | Before, M ops/s | After, M ops/s | Speed-up | Max latency before → after "
+        "| Allocations per op before → after |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in results["workloads"]:
+        old = before.get(row["name"])
+        if old is None:
+            continue
+        old_rate = old["ops_per_second"]["median"]
+        new_rate = row["ops_per_second"]["median"]
+        lines.append(
+            f"| `{row['name']}` | {millions(old_rate)} | {millions(new_rate)} "
+            f"| {new_rate / old_rate:.2f}× | {old['latency']['max_ns']:,} → "
+            f"{row['latency']['max_ns']:,} ns | {allocations_per_op(old):.2f} → "
+            f"{allocations_per_op(row):.2f} |"
+        )
+    return "\n".join(lines)
+
+
+def allocations_per_op(workload: Result) -> float:
+    kinds = workload["by_kind"].values()
+    operations = sum(kind["latency"]["count"] for kind in kinds)
+    allocations = sum(kind["allocations_per_op"] * kind["latency"]["count"] for kind in kinds)
+    return allocations / operations
+
+
+def replace_section(text: str, name: str, body: str) -> str:
+    pattern = re.compile(
+        rf"(<!-- bench:{name}:start -->\n).*?(\n<!-- bench:{name}:end -->)", re.DOTALL
+    )
+    if not pattern.search(text):
+        raise SystemExit(f"no bench:{name} markers in the document")
+    return pattern.sub(lambda match: match.group(1) + body + match.group(2), text)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("results", type=pathlib.Path)
+    parser.add_argument("--baseline", type=pathlib.Path)
+    parser.add_argument("--update", type=pathlib.Path)
+    args = parser.parse_args()
+    results = json.loads(args.results.read_text())
+    sections = {
+        "environment": environment(results),
+        "memory": memory(results),
+        "workloads": workloads(results),
+        "mixed": by_kind(results, "patterns/mixed"),
+    }
+    if args.baseline is not None:
+        sections["comparison"] = comparison(results, json.loads(args.baseline.read_text()))
+    if args.update is None:
+        for name, body in sections.items():
+            print(f"## {name}\n\n{body}\n")
+        return 0
+    text = args.update.read_text()
+    for name, body in sections.items():
+        text = replace_section(text, name, body)
+    args.update.write_text(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

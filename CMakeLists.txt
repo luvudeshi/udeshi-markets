@@ -18,6 +18,7 @@ option(UDESHI_BUILD_TESTS "Build the GoogleTest suite" ON)
 option(UDESHI_BUILD_PYTHON "Build the pybind11 extension module (udeshi_markets._engine)" OFF)
 option(UDESHI_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(UDESHI_SANITIZE "Build with AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(UDESHI_BUILD_BENCHMARKS "Build the engine benchmarks (bench/)" ON)
 
 # Applied to every first-party target (not to third-party dependencies).
 # -ffp-contract=off: never fuse a*b+c into an FMA. Whether a fused instruction exists differs
@@ -45,6 +46,12 @@ if(UDESHI_BUILD_TESTS)
 endif()
 
 add_subdirectory(engine)
+
+# The benchmark replaces the global operator new to count allocations, which would hide ASan's
+# own new/delete checks, and sanitized timings mean nothing: it is not built with sanitizers.
+if(UDESHI_BUILD_BENCHMARKS AND NOT UDESHI_SANITIZE)
+  add_subdirectory(bench)
+endif()
 
 if(UDESHI_BUILD_PYTHON)
   add_subdirectory(python)

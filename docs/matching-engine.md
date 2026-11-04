@@ -34,7 +34,7 @@ OrderBook (one per instrument)
 ├── bids : BookSide = std::map<Price, PriceLevel, BestFirst{Buy}>    // descending
 ├── asks : BookSide = std::map<Price, PriceLevel, BestFirst{Sell}>   // ascending
 ├── pool : OrderPool                                                 // owns every Order
-└── index: std::unordered_map<OrderId, Order*>                       // O(1) cancel lookup
+└── index: OrderIndex = open addressing over {OrderId, Order*} slots  // O(1) cancel lookup
 
 PriceLevel
   price, total_quantity, order_count
@@ -57,6 +57,16 @@ PriceLevel
   links. Copying a resting `Order` gives a plain snapshot that cannot reach, corrupt or dangle
   into the live book. Read-only views are deep-const: a `const Order` or `const PriceLevel` only
   ever hands out `const` neighbours.
+* **A flat id index.** `OrderIndex` is an open-addressing hash table: linear probing over one
+  contiguous array of `{id, Order*}` slots, Fibonacci hashing of the engine's sequential ids,
+  and deletion by backward shift, so there are no tombstones. It doubles before it is half
+  full. Adding or cancelling an order therefore allocates nothing (except when the table
+  doubles), and a lookup reads one or two adjacent slots.
+  * It replaced `std::unordered_map`, which allocated a node per resting order and chased a
+    pointer per lookup.
+  * Measured in [benchmarking.md](benchmarking.md), the replacement roughly doubled add/cancel
+    throughput and made random cancels in a 1M-order book 4.6 times faster. It also removed a
+    13 ms rehash stall.
 * **Self-validating primitives.** `OrderBook::insert` rejects anything `check_invariants()` would
   flag: wrong instrument, duplicate id, quantity or price out of range, invalid side, or a
   sequence number that isn't younger than the level's tail. It gives the strong exception
@@ -67,7 +77,7 @@ PriceLevel
 | Best bid / ask | O(1) |
 | Add order at an existing price level | O(log L) map lookup + O(1) append |
 | Add order at a new price level | O(log L) |
-| Cancel | O(1) average hash lookup + O(1) unlink (+ O(log L) if the level empties) |
+| Cancel | O(1) expected index probe + O(1) unlink (+ O(log L) if the level empties) |
 | Match k orders across m levels | O(k + m) (+ amortised O(1) per emptied best level) |
 | Depth snapshot of d levels | O(d) |
 
@@ -327,7 +337,7 @@ A compile failure counts as a kill only if a `static_assert` fires, since some p
 (deep-const accessors, saturating arithmetic) are tested at compile time. Any other build
 failure marks the mutant itself as invalid.
 
-**Current result: 61/61 killed on both Linux (GCC, libstdc++) and macOS (Clang, libc++).** The
+**Current result: 67/67 killed on both Linux (GCC, libstdc++) and macOS (Clang, libc++).** The
 history behind that number:
 * The first version of the suite, with 20 mutants, missed one: an untested STP cancel
   quantity.
@@ -342,6 +352,15 @@ history behind that number:
   * a shared STP bug in the engine and the model;
   * new[]/delete mismatches hidden by the fault-injection allocator.
 * Each one led to a new test, and all are now in the mutant list.
+* The open-addressing id index (Phase 6) brought six more mutants, killed by the index's
+  direct tests (including the wrap-around cases of backward-shift deletion) and by the
+  existing book tests:
+  * a lookup that gives up after the home slot;
+  * an erase that leaves a hole;
+  * a shift that ignores the wrap-around;
+  * a growth that drops entries;
+  * a skipped duplicate check;
+  * an order left out of the index.
 
 ## Known limitations
 
@@ -354,7 +373,12 @@ history behind that number:
   public tape.
 * `to_currency` returns a binary `double`. For example, 3 ticks of 0.05 is
   `0.15000000000000002`, so canonical decimal formatting is left to the presentation layer.
-* `std::map` levels and the `unordered_map` index allocate nodes. Phase 6 benchmarks will decide
-  whether a flat price-indexed ladder or an open-addressing index is worth the complexity.
+* `std::map` levels allocate a node per new price level, and lookups are O(log L). The
+  benchmarks ([benchmarking.md](benchmarking.md)) show this matters only for books with many
+  sparsely filled levels (about 20 M add/cancel operations/s at 10,000 levels per side, against
+  54 M at one). A flat price-indexed ladder would be the next step there.
+* `SubmitResult::trades` is a `std::vector`, so an order that trades allocates once (and again
+  as the vector grows). That is most of the remaining allocations in a mixed flow (0.33 per
+  operation).
 * `Exchange::notional` is a `double` accumulator. Each term is exact, but the running sum has a
   relative rounding error of about 1e‑16.

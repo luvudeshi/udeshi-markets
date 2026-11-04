@@ -19,6 +19,7 @@ endfunction()
 
 udeshi_add_test_executable(udeshi_engine_tests
   test_price_level.cpp
+  test_order_index.cpp
   test_order_book.cpp
   test_matching_engine.cpp
   test_exchange.cpp

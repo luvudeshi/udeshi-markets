@@ -25,7 +25,7 @@ Benchmarks come next; see the [roadmap](docs/architecture.md#phase-status).
   - best-first `std::map` price ladders (best price is always `begin()`);
   - intrusive doubly linked FIFO queues per level;
   - a slab allocator for orders;
-  - an id index for cancels.
+  - a flat open-addressing id index for cancels (no allocation per order).
 - **Deterministic.**
   - A global sequence number on every event.
   - Simulated (not wall-clock) timestamps.
@@ -41,7 +41,7 @@ Benchmarks come next; see the [roadmap](docs/architecture.md#phase-status).
   - golden cross-platform determinism digests;
   - allocation-failure injection;
   - ASan/UBSan with pool poisoning;
-  - mutation testing: 61/61 injected bugs caught on Linux and macOS, re-checked weekly in CI.
+  - mutation testing: 67/67 injected bugs caught on Linux and macOS, re-checked weekly in CI.
 
 ```
 Sell 10 @ 101, Sell 5 @ 102, then Buy 12 @ 102
@@ -239,7 +239,7 @@ uv run pytest                                   # bindings, kernel, API (warning
 uv run mypy                                     # --strict
 uv run ruff check python backend && uv run ruff format --check python backend
 
-python3 tools/mutation_test.py --jobs 4         # the suite must catch all 61 injected bugs
+python3 tools/mutation_test.py --jobs 4         # the suite must catch all 67 injected bugs
 
 cd frontend
 npm run lint && npm run typecheck && npm test   # ESLint, tsc (strict), Vitest

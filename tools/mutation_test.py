@@ -36,6 +36,7 @@ EX = "engine/src/exchange.cpp"
 TY = "engine/include/udeshi/types.hpp"
 
 ORDER = "engine/include/udeshi/order.hpp"
+IDX = "engine/include/udeshi/order_index.hpp"
 EXH = "engine/include/udeshi/exchange.hpp"
 
 # Both test executables; the fault-injection tests live in their own binary because they
@@ -151,6 +152,18 @@ MUTANTS = [
     m("book insert accepts invalid side", (OB,
       "if (!is_valid(order.side) || order.price <= 0 || order.price > kMaxPrice) {", "if (false) {")),
     m("book insert accepts other instrument", (OB, "if (order.instrument != instrument_) {", "if (false) {")),
+    m("book insert skips the duplicate id check", (OB,
+      "  if (index_.find(order.id) != nullptr) {", "  if (false) {")),
+    m("book insert leaves the order out of the index", (OB, "  index_.insert(order.id, node);\n", "")),
+    # ---- The id index (open addressing) --------------------------------------------------------
+    m("index lookup gives up after the home slot", (IDX,
+      "      if (slots_[i].id == kInvalidOrderId) {\n        return nullptr;\n      }", "      return nullptr;")),
+    m("index erase leaves a hole in the probe run", (IDX, "      if (hole_on_path) {", "      if (hole_on_path && false) {")),
+    m("index shift ignores the wrap-around", (IDX,
+      "hole <= i ? (wanted <= hole || wanted > i) : (wanted <= hole && wanted > i)",
+      "(wanted <= hole || wanted > i)")),
+    m("index growth drops entries", (IDX,
+      "      if (slot.id != kInvalidOrderId) {", "      if (slot.id != kInvalidOrderId && slot.id % 2 == 0) {")),
     m("book insert accepts out-of-order sequence", (OB,
       "if (!level.empty() && level.back()->sequence >= order.sequence) {", "if (false) {")),
     m("order copies keep their links", (ORDER,

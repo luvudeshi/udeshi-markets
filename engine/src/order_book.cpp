@@ -46,15 +46,9 @@ std::size_t OrderBook::level_count(Side side_to_query) const noexcept {
   return side(side_to_query).level_count();
 }
 
-const Order* OrderBook::find(OrderId id) const noexcept {
-  const auto it = index_.find(id);
-  return it == index_.end() ? nullptr : it->second;
-}
+const Order* OrderBook::find(OrderId id) const noexcept { return index_.find(id); }
 
-Order* OrderBook::find_mutable(OrderId id) noexcept {
-  const auto it = index_.find(id);
-  return it == index_.end() ? nullptr : it->second;
-}
+Order* OrderBook::find_mutable(OrderId id) noexcept { return index_.find(id); }
 
 std::vector<LevelView> OrderBook::depth(Side side_to_query, std::size_t max_levels) const {
   const BookSide& book_side = side(side_to_query);
@@ -99,38 +93,31 @@ Order& OrderBook::insert(Order order) {
   if (!is_valid(order.side) || order.price <= 0 || order.price > kMaxPrice) {
     throw std::invalid_argument("OrderBook::insert: invalid side or price");
   }
-  // Reserve the index slot first so that a failure leaves the book untouched.
-  const auto [slot, inserted] = index_.try_emplace(order.id, nullptr);
-  if (!inserted) {
+  if (index_.find(order.id) != nullptr) {
     throw std::invalid_argument("OrderBook::insert: duplicate order id " +
                                 std::to_string(order.id));
   }
+  // Room in the index first (growing it changes no entry), so that nothing can fail once the
+  // order is in its level.
+  index_.reserve_one();
+  PriceLevel& level = mutable_side(order.side).find_or_create(order.price);
+  // Time priority is list order, so a new order must be younger than the current tail. (If
+  // this throws, the level already existed and is unchanged.)
+  if (!level.empty() && level.back()->sequence >= order.sequence) {
+    throw std::invalid_argument("OrderBook::insert: sequence not after the level's tail");
+  }
   Order* node = nullptr;
   try {
-    PriceLevel& level = mutable_side(order.side).find_or_create(order.price);
-    // Time priority is list order, so a new order must be younger than the current tail. (If
-    // this throws, the level already existed and is unchanged.)
-    if (!level.empty() && level.back()->sequence >= order.sequence) {
-      throw std::invalid_argument("OrderBook::insert: sequence not after the level's tail");
-    }
-    try {
-      node = pool_.allocate();
-    } catch (...) {
-      if (level.empty()) {
-        mutable_side(order.side).erase(order.price);  // Drop the level we just created.
-      }
-      throw;
-    }
-    *node = order;
-    level.push_back(node);
+    node = pool_.allocate();
   } catch (...) {
-    if (node != nullptr) {
-      pool_.release(node);
+    if (level.empty()) {
+      mutable_side(order.side).erase(order.price);  // Drop the level we just created.
     }
-    index_.erase(slot);
     throw;
   }
-  slot->second = node;
+  *node = order;
+  level.push_back(node);
+  index_.insert(order.id, node);
   return *node;
 }
 
@@ -191,8 +178,7 @@ void OrderBook::check_side_invariants(const BookSide& book_side,
       if (previous != nullptr && previous->sequence >= order->sequence) {
         invariant_violation(where.str() + "FIFO queue not in strictly increasing sequence order");
       }
-      const auto indexed = index_.find(order->id);
-      if (indexed == index_.end() || indexed->second != order) {
+      if (index_.find(order->id) != order) {
         invariant_violation(where.str() + "resting order missing from id index");
       }
       summed_quantity += order->remaining_quantity;

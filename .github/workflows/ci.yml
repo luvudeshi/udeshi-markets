@@ -37,6 +37,30 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }} --parallel 4
 
+  benchmark:
+    # Runs the engine benchmarks (bench/, docs/benchmarking.md) in a Release build on a hosted
+    # Linux runner. The numbers are informational (a shared VM), but the run checks that every
+    # workload replays exactly, and its JSON is kept as an artifact.
+    name: benchmark
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build (Release)
+        run: |
+          cmake --preset release -DUDESHI_BUILD_TESTS=OFF
+          cmake --build --preset release --target udeshi_bench
+      - name: Benchmark
+        run: build/release/bench/udeshi_bench --json bench-linux.json
+      - name: Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-linux
+          path: bench-linux.json
+          retention-days: 30
+
   python:
     name: python (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

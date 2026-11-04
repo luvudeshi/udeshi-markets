@@ -638,6 +638,7 @@ The user's later messages, verbatim, in order:
 9. "Before we start phase 5, do the thing where you compile all the information so far and
    save it all and whatnot so that i can use / compact afterward without you losing anything."
 10. "Start Phase 5"
+11. "Start Phase 6"
 
 What these add to the brief:
 * **Speed matters.** The user does not want to wait on long background reviews. Fix findings as

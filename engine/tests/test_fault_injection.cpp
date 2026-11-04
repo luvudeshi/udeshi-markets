@@ -182,22 +182,37 @@ int check_insert_failure_atomicity(Prepare&& prepare, const Order& order) {
 }
 
 TEST(FaultInjection, OrderBookInsertIntoEmptyBookIsFailureAtomic) {
-  // Allocations: id-index node (and buckets), map node for the new level, a pool chunk and the
-  // free-list buffer. A floor guards against the test silently exercising nothing.
+  // Allocations: the id index's first table, the map node for the new level, a pool chunk and
+  // the free-list buffer. A floor guards against the test silently exercising nothing.
   const int failure_points =
       check_insert_failure_atomicity([](OrderBook&) {}, resting_buy(1, 100, 1));
   EXPECT_GE(failure_points, 3);
 }
 
-TEST(FaultInjection, OrderBookInsertIntoExistingLevelIsFailureAtomic) {
-  // The level exists and the pool has free nodes, so only the id index can fail.
+TEST(FaultInjection, OrderBookInsertIntoExistingLevelAllocatesNothing) {
+  // The level exists, the pool has free nodes and the id index has room: an insert then
+  // allocates nothing at all, so there is no failure point (the index used to allocate a node
+  // per order).
   const int failure_points = check_insert_failure_atomicity(
       [](OrderBook& book) {
         book.insert(resting_buy(1, 100, 1));
         book.insert(resting_buy(2, 101, 2));
       },
       resting_buy(3, 100, 3));
-  EXPECT_GE(failure_points, 1);
+  EXPECT_EQ(failure_points, 0);
+}
+
+TEST(FaultInjection, OrderBookInsertThatGrowsTheIndexIsFailureAtomic) {
+  // The index doubles before it is half full: with 32 orders in a table of 64 slots, the next
+  // insert must grow it, and that allocation is the only one that can fail.
+  const int failure_points = check_insert_failure_atomicity(
+      [](OrderBook& book) {
+        for (OrderId id = 1; id <= 32; ++id) {
+          book.insert(resting_buy(id, 100, id));
+        }
+      },
+      resting_buy(33, 100, 33));
+  EXPECT_EQ(failure_points, 1);
 }
 
 // Allocation failure after matching has modified the book cannot be reported consistently,
@@ -210,7 +225,7 @@ TEST(FaultInjectionDeathTest, AllocationFailureDuringMatchingTerminates) {
   }
   EXPECT_DEATH(
       {
-        FailNthAllocation inject(2);  // The trade vector's first growth succeeds, the second fails.
+        FailNthAllocation inject(2);  // The trade vector's first allocation succeeds, its growth fails.
         static_cast<void>(engine.submit(market(Side::Buy, 100, 2)));
       },
       "bad_alloc");
