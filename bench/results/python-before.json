@@ -1,0 +1,72 @@
+{
+  "machine": {
+    "cpu": "Apple M4",
+    "platform": "macOS-15.6-arm64-arm-64bit",
+    "python": "CPython 3.12.15"
+  },
+  "quick": false,
+  "runs": 3,
+  "kernel": [
+    {
+      "simulated_minutes": 10,
+      "observed": false,
+      "events": 37287,
+      "orders": 14126,
+      "trades": 4830,
+      "wall_seconds": 0.43568395799957216,
+      "events_per_second": 85582.67825880478,
+      "orders_per_second": 32422.584629599496,
+      "trades_per_second": 11086.017539357606,
+      "simulated_seconds_per_second": 1377.1450359450444,
+      "digest": "930e282b6c74f6a2a29b9e3b7c73794d"
+    },
+    {
+      "simulated_minutes": 10,
+      "observed": true,
+      "events": 37287,
+      "orders": 14126,
+      "trades": 4830,
+      "wall_seconds": 0.4981588339433074,
+      "events_per_second": 74849.62116368576,
+      "orders_per_second": 28356.417747692896,
+      "trades_per_second": 9695.702797774082,
+      "simulated_seconds_per_second": 1204.435130158271,
+      "digest": "930e282b6c74f6a2a29b9e3b7c73794d"
+    }
+  ],
+  "live": [
+    {
+      "simulated_minutes": 10,
+      "samples": 602,
+      "trades": 4837,
+      "participants": 28,
+      "analyze_ms": 11.24291680753231,
+      "analytics_endpoint_ms": 11.177875101566315,
+      "sharpe_all_participants_ms": 2.0139161497354507,
+      "leaderboard_ms": 2.7783329132944345,
+      "tick_ms": 0.1553744077682495
+    },
+    {
+      "simulated_minutes": 30,
+      "samples": 1802,
+      "trades": 12526,
+      "participants": 28,
+      "analyze_ms": 32.26749994792044,
+      "analytics_endpoint_ms": 32.44566707871854,
+      "sharpe_all_participants_ms": 6.177958101034164,
+      "leaderboard_ms": 6.96879206225276,
+      "tick_ms": 0.0746455043554306
+    },
+    {
+      "simulated_minutes": 120,
+      "samples": 7202,
+      "trades": 46345,
+      "participants": 28,
+      "analyze_ms": 130.16033289022744,
+      "analytics_endpoint_ms": 130.58687513694167,
+      "sharpe_all_participants_ms": 25.66641615703702,
+      "leaderboard_ms": 26.97779214940965,
+      "tick_ms": 0.23231247905641794
+    }
+  ]
+}

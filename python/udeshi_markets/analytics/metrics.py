@@ -10,26 +10,22 @@ m the midprice just before the trade and m' the midprice ``markout`` later:
 All three are volume-weighted and computed over the same trades: those with both quotes. A
 trade from a one-sided book, or too close to the end of the run for its markout, is counted but
 excluded. Spreads and impacts are in basis points.
+
+The metrics are read from the observer's running aggregates (observer.py, running.py), so they
+cost the same however long the run. Each aggregate is the batch computation over the record in
+stats.py (the mean of the values, the sample standard deviation of the returns, ...) carried
+along one observation at a time; the tests hold the two to each other.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from udeshi_markets.agents import TradingAgent
-from udeshi_markets.analytics.observer import MarketObserver
-from udeshi_markets.analytics.stats import (
-    max_drawdown,
-    mean,
-    realized_volatility,
-    sharpe_ratio,
-    simple_returns,
-    weighted_mean,
-)
-from udeshi_markets.simulation import ENVIRONMENT_ID, Participant, deterministic_log
-
-BPS = 10_000.0
+from udeshi_markets.analytics.observer import BPS, MarketObserver
+from udeshi_markets.simulation import ENVIRONMENT_ID, Participant
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,78 +110,52 @@ def _market(observer: MarketObserver, instrument: int) -> MarketMetrics:
     simulation = observer.simulation
     stats = simulation.exchange.statistics(instrument)
     tick = simulation.exchange.instrument(instrument).tick_size
-    series = observer.series[instrument]
-    two_sided = [
-        (mid, spread)
-        for mid, spread in zip(series.mids, series.spreads, strict=True)
-        if mid is not None and spread is not None
-    ]
-    depths = [b + a for b, a in zip(series.bid_depth, series.ask_depth, strict=True)]
-    imbalances = [
-        (b - a) / (b + a)
-        for b, a in zip(series.bid_depth, series.ask_depth, strict=True)
-        if b + a > 0
-    ]
-    errors = [
-        abs(deterministic_log(mid * tick) - deterministic_log(value))
-        for mid, value in zip(series.mids, series.fundamentals, strict=True)
-        if mid is not None and value is not None and value > 0
-    ]
-    samples = len(series.mids)
-    spread_mean = mean([spread for _, spread in two_sided])
+    aggregates = observer.aggregates[instrument]
+    samples = observer.samples
+    spread_mean = aggregates.spread.value
+    returns_stdev = aggregates.log_returns.stdev  # Of log returns between samples.
+    error = aggregates.pricing_error.value
     return MarketMetrics(
         symbol=simulation.config.symbols[instrument],
         trades=stats.trade_count,
         volume=stats.volume,
         last_price=None if stats.last_price is None else stats.last_price * tick,
-        volatility_per_hour=realized_volatility(series.mids, observer.periods_per_hour),
+        volatility_per_hour=(
+            None if returns_stdev is None else returns_stdev * math.sqrt(observer.periods_per_hour)
+        ),
         mean_spread=None if spread_mean is None else spread_mean * tick,
-        mean_spread_bps=mean([spread / mid * BPS for mid, spread in two_sided]),
-        one_sided_fraction=(samples - len(two_sided)) / samples if samples else 0.0,
-        mean_depth=mean([float(d) for d in depths]),
-        mean_imbalance=mean(imbalances),
-        pricing_error_bps=None if not errors else (mean(errors) or 0.0) * BPS,
+        mean_spread_bps=aggregates.spread_bps.value,
+        one_sided_fraction=(samples - aggregates.two_sided) / samples if samples else 0.0,
+        mean_depth=aggregates.depth.value,
+        mean_imbalance=aggregates.imbalance.value,
+        pricing_error_bps=None if error is None else (error or 0.0) * BPS,
     )
 
 
 def _microstructure(observer: MarketObserver, instrument: int) -> MicrostructureMetrics:
     simulation = observer.simulation
-    trades = [(index, t) for index, t in enumerate(observer.trades) if t.instrument == instrument]
-    effective: list[float] = []
-    realized: list[float] = []
-    impact: list[float] = []
-    weights: list[float] = []
-    without_quote = without_markout = 0
-    for index, trade in trades:
-        if trade.mid_before is None:
-            without_quote += 1
-            continue
-        after = observer.mid_after.get(index)
-        if after is None:
-            # Not yet due (too close to the end), or the book was one-sided at the horizon.
-            without_markout += 1
-            continue
-        m, m_after, p, s = float(trade.mid_before), float(after), trade.price, trade.sign
-        effective.append(2 * s * (p - m) / m * BPS)
-        realized.append(2 * s * (p - m_after) / m * BPS)
-        impact.append(2 * s * (m_after - m) / m * BPS)
-        weights.append(float(trade.quantity))
-    volume = sum(t.quantity for _, t in trades)
+    aggregates = observer.aggregates[instrument]
+    trades, volume = aggregates.trades, aggregates.volume
     submitted = observer.submitted[instrument]
+    weights = aggregates.weights.value
+
+    def weighted_mean(total: float) -> float | None:
+        # Of each measured trade's bps, weighted by its quantity.
+        return None if aggregates.measured == 0 or weights == 0 else total / weights
+
     return MicrostructureMetrics(
         symbol=simulation.config.symbols[instrument],
-        effective_spread_bps=weighted_mean(effective, weights),
-        realized_spread_bps=weighted_mean(realized, weights),
-        price_impact_bps=weighted_mean(impact, weights),
-        measured_trades=len(weights),
-        trades_without_quote=without_quote,
-        trades_without_markout=without_markout,
+        effective_spread_bps=weighted_mean(aggregates.effective.value),
+        realized_spread_bps=weighted_mean(aggregates.realized.value),
+        price_impact_bps=weighted_mean(aggregates.impact.value),
+        measured_trades=aggregates.measured,
+        trades_without_quote=aggregates.without_quote,
+        # Not yet due (too close to the end), or the book was one-sided at the horizon.
+        trades_without_markout=trades - aggregates.without_quote - aggregates.measured,
         # Every trade fills two orders (the aggressor's and the resting one).
         fill_rate=2 * volume / submitted if submitted else None,
-        average_trade_size=volume / len(trades) if trades else None,
-        buyer_initiated_fraction=(
-            sum(1 for _, t in trades if t.sign > 0) / len(trades) if trades else None
-        ),
+        average_trade_size=volume / trades if trades else None,
+        buyer_initiated_fraction=aggregates.buyer_initiated / trades if trades else None,
     )
 
 
@@ -196,9 +166,8 @@ def _agent(observer: MarketObserver, participant_id: int) -> AgentMetrics:
     marks = simulation.marks()
     symbols = simulation.config.symbols
     details = [portfolio.details(i) for i in range(len(symbols))]
-    equity = observer.equity[participant_id]
-    exposure = observer.exposure[participant_id]
-    drawdown = max_drawdown(equity)
+    aggregates = observer.participant_aggregates[participant_id]
+    drawdown = aggregates.drawdown.value
     initial = float(portfolio.initial_cash)
     total = float(portfolio.total_pnl(marks))
     closing = sum(d.closing_trades for d in details)
@@ -217,11 +186,11 @@ def _agent(observer: MarketObserver, participant_id: int) -> AgentMetrics:
         unrealized_pnl=float(portfolio.unrealized_pnl(marks)),
         total_pnl=total,
         return_pct=total / initial * 100 if initial > 0 else None,
-        sharpe_ratio=sharpe_ratio(simple_returns(equity), observer.periods_per_hour),
+        sharpe_ratio=aggregates.sharpe.ratio(observer.periods_per_hour),
         max_drawdown=None if drawdown is None else drawdown[0],
         max_drawdown_pct=None if drawdown is None or drawdown[1] is None else drawdown[1] * 100,
-        mean_exposure=mean(exposure),
-        max_exposure=max(exposure) if exposure else None,
+        mean_exposure=aggregates.exposure.value,
+        max_exposure=aggregates.max_exposure,
         win_rate=sum(d.winning_trades for d in details) / closing if closing else None,
         trades=sum(d.trades for d in details),
         filled_quantity=filled,
