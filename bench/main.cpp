@@ -40,6 +40,7 @@ struct Options {
   bool list = false;
   bool self_check = false;
   std::size_t memory_only = 0;  // Internal: measure one book size and print it.
+  std::size_t growth_only = 0;  // Internal: time the inserts that grow the id index.
 };
 
 constexpr const char* kUsage =
@@ -74,6 +75,8 @@ Options parse_options(int argc, char** argv) {
       options.self_check = true;
     } else if (arg == "--memory-only") {
       options.memory_only = static_cast<std::size_t>(std::stoull(value()));
+    } else if (arg == "--growth-only") {
+      options.growth_only = static_cast<std::size_t>(std::stoull(value()));
     } else if (arg == "--help" || arg == "-h") {
       std::fputs(kUsage, stdout);
       std::exit(0);
@@ -381,14 +384,18 @@ MemoryResult measure_memory(std::size_t orders, std::size_t levels) {
   return result;
 }
 
-// Measures one size in a child process (this program with --memory-only).
-MemoryResult measure_memory_in_child(const std::string& program, std::size_t orders) {
+// `text` as one single-quoted shell word.
+std::string shell_quote(const std::string& text) {
   std::string quoted = "'";
-  for (const char c : program) {
+  for (const char c : text) {
     quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
   }
-  quoted += "'";
-  const std::string command = quoted + " --memory-only " + std::to_string(orders);
+  return quoted + "'";
+}
+
+// Measures one size in a child process (this program with --memory-only).
+MemoryResult measure_memory_in_child(const std::string& program, std::size_t orders) {
+  const std::string command = shell_quote(program) + " --memory-only " + std::to_string(orders);
   FILE* child = popen(command.c_str(), "r");
   if (child == nullptr) {
     throw std::runtime_error("memory: cannot start " + program);
@@ -403,6 +410,67 @@ MemoryResult measure_memory_in_child(const std::string& program, std::size_t ord
                              " orders failed");
   }
   return result;
+}
+
+// ---- Index growth --------------------------------------------------------------------------
+
+// The id index doubles before it is half full, rehashing every entry in one insert: the
+// insert that brings a book to 2^k + 1 resting orders. Each such insert is timed while a book
+// is built one order at a time, in a fresh process.
+constexpr std::size_t kFirstGrowthReported = 1'024;
+
+struct GrowthPoint {
+  std::size_t orders = 0;               // Resting orders after the insert (2^k + 1).
+  std::vector<std::int64_t> latency_ns;  // One per process.
+};
+
+void print_growth(std::size_t orders) {
+  const std::vector<OrderRequest> requests = resting_orders(orders, 1'000);
+  EngineTarget target;
+  Checksum checksum;
+  std::size_t next = kFirstGrowthReported;
+  for (std::size_t i = 0; i < requests.size(); ++i) {
+    const auto start = Clock::now();
+    checksum.add_light(target.submit(requests[i]));
+    const auto end = Clock::now();
+    if (i == next) {  // The (next + 1)-th order, which grows the index.
+      std::printf("growth %zu %lld\n", i + 1,
+                  static_cast<long long>(nanoseconds_between(start, end)));
+      next *= 2;
+    }
+  }
+  if (target.order_count() != orders) {
+    throw std::runtime_error("growth: not every order rested");
+  }
+}
+
+std::vector<GrowthPoint> measure_growth(const std::string& program, std::size_t orders,
+                                        int processes) {
+  std::vector<GrowthPoint> points;
+  for (int run = 0; run < processes; ++run) {
+    FILE* child = popen((shell_quote(program) + " --growth-only " + std::to_string(orders)).c_str(),
+                        "r");
+    if (child == nullptr) {
+      throw std::runtime_error("growth: cannot start " + program);
+    }
+    std::size_t index = 0;
+    std::size_t at = 0;
+    long long nanoseconds = 0;
+    while (std::fscanf(child, "growth %zu %lld\n", &at, &nanoseconds) == 2) {
+      if (run == 0) {
+        points.push_back({at, {}});
+      }
+      if (index >= points.size() || points[index].orders != at) {
+        pclose(child);
+        throw std::runtime_error("growth: runs disagree on where the index grows");
+      }
+      points[index++].latency_ns.push_back(nanoseconds);
+    }
+    if (pclose(child) != 0 || index != points.size() || points.empty()) {
+      throw std::runtime_error("growth: a measurement failed");
+    }
+  }
+  return points;
 }
 
 // ---- Output --------------------------------------------------------------------------------
@@ -435,7 +503,7 @@ std::string json_latency(const LatencyStats& stats) {
 
 void write_json(const std::string& path, const Options& options, const Environment& environment,
                 const ClockInfo& clock, const std::string& scheduling,
-                const std::vector<MemoryResult>& memory,
+                const std::vector<MemoryResult>& memory, const std::vector<GrowthPoint>& growth,
                 const std::vector<WorkloadResult>& results) {
   std::ofstream out(path);
   if (!out) {
@@ -465,6 +533,15 @@ void write_json(const std::string& path, const Options& options, const Environme
         << ", \"heap_bytes_per_order\": " << m.heap_bytes_per_order
         << ", \"allocations_per_order\": " << m.allocations_per_order
         << ", \"rss_bytes_per_order\": " << m.rss_bytes_per_order << "}";
+  }
+  out << "\n  ],\n  \"index_growth\": [";
+  for (std::size_t i = 0; i < growth.size(); ++i) {
+    out << (i == 0 ? "\n" : ",\n") << "    {\"orders\": " << growth[i].orders
+        << ", \"latency_ns\": [";
+    for (std::size_t run = 0; run < growth[i].latency_ns.size(); ++run) {
+      out << (run == 0 ? "" : ", ") << growth[i].latency_ns[run];
+    }
+    out << "]}";
   }
   out << "\n  ],\n  \"workloads\": [";
   for (std::size_t i = 0; i < results.size(); ++i) {
@@ -527,6 +604,10 @@ int run(int argc, char** argv) {
     self_check();
     return 0;
   }
+  if (options.growth_only > 0) {
+    print_growth(options.growth_only);
+    return 0;
+  }
   const std::vector<WorkloadSpec> specs = workload_specs(options.quick);
   const auto selected = [&](const std::string& name) {
     return options.filter.empty() || name.find(options.filter) != std::string::npos;
@@ -570,6 +651,21 @@ int run(int argc, char** argv) {
     std::printf("\n");
   }
 
+  std::vector<GrowthPoint> growth;
+  if (selected("growth")) {
+    constexpr int kGrowthProcesses = 3;
+    growth = measure_growth(argv[0], options.quick ? 70'000 : 1'100'000, kGrowthProcesses);
+    std::printf("%-26s %s\n", "index growth (orders)", "insert ns, one per process");
+    for (const GrowthPoint& point : growth) {
+      std::printf("%-26zu", point.orders);
+      for (const std::int64_t ns : point.latency_ns) {
+        std::printf(" %10lld", static_cast<long long>(ns));
+      }
+      std::printf("\n");
+    }
+    std::printf("\n");
+  }
+
   std::printf("%-26s %9s %9s %8s %7s %7s %7s %8s %9s %7s\n", "workload", "ops", "Mops/s",
               "mean ns", "p50", "p95", "p99", "p99.9", "max", "alloc/op");
   std::vector<WorkloadResult> results;
@@ -585,7 +681,8 @@ int run(int argc, char** argv) {
   }
 
   if (!options.json_path.empty()) {
-    write_json(options.json_path, options, environment, clock, scheduling, memory, results);
+    write_json(options.json_path, options, environment, clock, scheduling, memory, growth,
+               results);
     std::printf("\nwrote %s\n", options.json_path.c_str());
   }
   return 0;
