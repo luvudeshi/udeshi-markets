@@ -2,7 +2,8 @@
 
 The `udeshi_api` package ([`backend/`](../backend)) is a FastAPI service over the simulation
 layer. Interactive documentation is served at `/docs` (Swagger UI) and `/redoc`, and the OpenAPI
-schema at `/openapi.json`.
+schema at `/openapi.json`. `python -m udeshi_api.openapi` prints the same schema; the
+frontend's TypeScript types are generated from it, and CI fails if they fall out of date.
 
 ```bash
 uv run python -m udeshi_api                 # http://127.0.0.1:8000/docs
@@ -21,7 +22,7 @@ Settings come from environment variables:
 | `UDESHI_STREAM_BOOK_DEPTH` | `15` | Levels per side in streamed books. |
 | `UDESHI_MAX_BARS` | `500000` | Most OHLCV bars a simulation may produce (instruments × duration ÷ bar interval). Larger requests get 422. |
 | `UDESHI_TRADE_HISTORY` | `10000` | Recent trades kept per instrument for the tape endpoint and stream snapshots. |
-| `UDESHI_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins. |
+| `UDESHI_CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated allowed origins (the Next.js terminal). |
 | `UDESHI_DATABASE_URL` | none | Where experiment results are kept: a SQLAlchemy URL such as `postgresql+psycopg://user:password@host:5432/db` (Compose sets one). Unset: an in-memory SQLite database, lost when the process exits. |
 | `UDESHI_EXPERIMENT_WORKERS` | min(4, CPUs) | Worker processes that run experiment simulations. |
 
@@ -67,8 +68,8 @@ Settings come from environment variables:
 | --- | --- |
 | `GET /api/markets` | Summary per market: last, change, change %, OHLC, volume, VWAP, best bid/ask, mid, spread, and `fundamental_value` (see below). |
 | `GET /api/markets/{symbol}` | Summary plus depth totals, resting order count, notional. |
-| `GET /api/markets/{symbol}/orderbook?depth=10` | Aggregated levels (price, quantity, order count) per side, best first. |
-| `GET /api/markets/{symbol}/trades?limit=50` | Public tape, oldest first. No order ids or trader identities. |
+| `GET /api/markets/{symbol}/orderbook?depth=10` | Aggregated levels per side, best first: price, quantity, order count, and `cumulative_quantity` (this level and every better one: the depth curve). |
+| `GET /api/markets/{symbol}/trades?limit=50` | The tape, oldest first, with each trade's `buyer` and `seller` (see below). No order ids. |
 | `GET /api/markets/{symbol}/history?interval_seconds=&limit=500` | Closed OHLCV bars. The interval must be a whole multiple of the simulation's bar interval. |
 | `GET /api/markets/{symbol}/orders` | Your (the API user's) resting orders. |
 | `POST /api/markets/{symbol}/orders` | Submit an order as the API user: `side`, `type` (`limit` or `market`), `price` (limit only), `quantity`, `time_in_force` (`gtc` or `ioc`), `self_trade_prevention`. It is processed immediately at the current simulated time, and the response includes its status and fills (201). |
@@ -81,6 +82,12 @@ same kernel path, digest and ownership checks as any agent's.
 the reference price before the start, `null` without an environment. It is the *observer's*
 view, for charts and research. Agents never see it: fundamental traders get noisy private
 signals, and everyone else sees only prices and news.
+
+`buyer` and `seller` on the tape are the participant ids of the two sides, the observer's view
+too. The tape agents read is anonymous: the kernel gives them prices, quantities and the
+aggressor side, never counterparties. The API learns the ids from the kernel's observer hook
+(`backend/udeshi_api/counterparties.py`) and keeps them for as many trades as the tape holds
+(`UDESHI_TRADE_HISTORY`); a reset clears them with the simulation.
 
 ### Agents and market
 
@@ -176,7 +183,7 @@ stored per run, not the full time series.
    | `simulation` | `state`, `time_seconds`, `progress`, `speed`, `error`. Sent only when one of them changes. |
    | `book` | The same fields as the order-book endpoint, for a symbol whose book changed. |
    | `market` | The market summary for that symbol. |
-   | `trades` | `symbol` and the new public trades. |
+   | `trades` | `symbol` and the new trades, with `buyer` and `seller` as on the tape endpoint. |
    | `bars` | `symbol`, the newly closed OHLCV bars, and `omitted`. A jump in simulated time (a step to the end, a fast tick) can close many bars at once: the message carries the newest 1,000 and counts the rest in `omitted`; the history endpoint has them all. |
    | `news` | One published news item (the fields of `GET /api/news`), for subscribed symbols. It comes before the book and trade updates of the same tick. |
    | `agents` | The leaderboard: every participant, as in `GET /api/agents`. Sent at most once per second of wall time, only when something in it changed, and only for simulations with agents or a market environment. |

@@ -1,5 +1,6 @@
-# Local stack: the API and PostgreSQL (experiment results). The frontend (Phase 5) joins here.
-#   docker compose up --build    then open http://localhost:8000/docs
+# Local stack: the trading terminal, the API and PostgreSQL (experiment results).
+#   docker compose up --build    then open http://localhost:3000 (API docs: :8000/docs)
+# The browser talks to the API directly, at the address in UDESHI_API_URL.
 # The database credentials are for this local stack only.
 services:
   db:
@@ -25,11 +26,24 @@ services:
     ports:
       - "8000:8000"
     environment:
-      UDESHI_CORS_ORIGINS: "http://localhost:3000"
+      UDESHI_CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
       UDESHI_LOG_LEVEL: "info"
       UDESHI_DATABASE_URL: "postgresql+psycopg://udeshi:udeshi@db:5432/udeshi"
     depends_on:
       db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: frontend
+    image: udeshi-markets/web:dev
+    ports:
+      - "3000:3000"
+    environment:
+      UDESHI_API_URL: "http://localhost:8000"
+    depends_on:
+      api:
         condition: service_healthy
     restart: unless-stopped
 
