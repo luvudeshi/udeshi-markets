@@ -98,7 +98,7 @@ A `Participant` subclass overrides the callbacks it needs:
 The context binds its identity, so a participant can only trade as itself. It sees public market
 data: the book, the statistics and the anonymised trade tape. It also sees reports about its own
 orders. A `Fill` carries no counterparty identity, and a participant's own orders are visible to
-it but no one else's. Strategies (Phase 3) therefore cannot use information a real market
+it but no one else's. Strategies therefore cannot use information a real market
 participant wouldn't have.
 
 **Ownership-checked cancels.** At arrival the kernel looks up the order:
@@ -152,6 +152,28 @@ For live publishing (`track_changes=True`), `drain_changes()` returns:
 * the new public trades;
 * every newly closed bar, including bars closed as a side effect of a trade landing in a later
   bar.
+
+## Market environment, news and portfolios
+
+`Simulation(config, participants, environment=lambda: MarketEnvironment(env_config))` installs
+a market environment (see [trading-agents.md](trading-agents.md) for its model).
+* The environment is a participant with a reserved id (999999) and a context that can also
+  publish news. It starts before every other participant, so fundamental values exist before
+  anyone asks. Like every participant, it is rebuilt on reset.
+* **News** is an event of its own (`NewsArrival`). It is digested, kept in a public log
+  (`ctx.recent_news()`), reported in `drain_changes()`, and delivered through `on_news` to every
+  participant in id order at the instant it is published.
+* **Portfolios.** The kernel keeps an exact portfolio for every participant: cash, positions,
+  average-cost P&L. All start with `config.initial_cash`. Every trade is booked to the buyer and
+  the seller before any callback runs, so callbacks always see books that include the trade.
+  Observers read portfolios with `simulation.portfolio(id)`; participants read their own with
+  `ctx.portfolio`. Both views are read-only.
+* **Contexts also offer:**
+  * `ctx.activity`, the trading-activity level;
+  * `ctx.mark(i)`, the midprice, else the last trade, else the reference price;
+  * `ctx.reference_price(i)`;
+  * `ctx.fundamental_estimate(i)`, for participants granted a signal: a noisy view of the
+    current value only.
 
 ## Determinism
 
@@ -217,11 +239,10 @@ simulation.
   on pacing.
 * Headless runs and experiments never use the runner.
 
-## Limitations (Phase 2)
+## Limitations
 
 * The kernel is single-threaded and runs in Python. The hot path, matching, is C++. Phase 6
   will profile whether event dispatch or agent code needs to move to C++ for large Monte Carlo
   sweeps.
 * Latency is a single configured constant for every participant. Per-participant or random
   latency would be a straightforward extension of the scheduling call.
-* Market data events (news, fundamental changes) and agents arrive in Phase 3.

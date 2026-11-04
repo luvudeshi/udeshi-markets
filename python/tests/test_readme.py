@@ -1,4 +1,5 @@
-"""The README's Python example must keep running and keep printing the same deterministic result."""
+"""The README's Python examples must keep running and keep printing the same deterministic
+results."""
 
 from __future__ import annotations
 
@@ -9,15 +10,24 @@ from pathlib import Path
 
 README = Path(__file__).resolve().parents[2] / "README.md"
 
+EXPECTED = [
+    "9263 28424 dbcb62714eb57ef0c337fed2bbec35d5\n",
+    "3761 {'fundamental': 1473, 'market_maker': -1192, 'momentum': 391, 'pairs': -12, "
+    "'random': -659}\n",
+]
 
-def test_readme_example_runs_and_is_deterministic() -> None:
+
+def run(block: str) -> str:
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        exec(compile(block, str(README), "exec"), {"__name__": "readme_example"})
+    return stdout.getvalue()
+
+
+def test_readme_examples_run_and_are_deterministic() -> None:
     blocks = re.findall(r"```python\n(.*?)```", README.read_text(encoding="utf-8"), re.DOTALL)
-    assert len(blocks) == 1, "expected exactly one Python example in the README"
-    outputs = []
-    for _ in range(2):
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            exec(compile(blocks[0], str(README), "exec"), {"__name__": "readme_example"})
-        outputs.append(stdout.getvalue())
-    assert outputs[0] == outputs[1]
-    assert outputs[0] == "9263 28424 dbcb62714eb57ef0c337fed2bbec35d5\n"
+    assert len(blocks) == len(EXPECTED), "an example was added or removed: update EXPECTED"
+    for block, expected in zip(blocks, EXPECTED, strict=True):
+        first = run(block)
+        assert first == run(block)
+        assert first == expected

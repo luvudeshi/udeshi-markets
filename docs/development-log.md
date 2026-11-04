@@ -9,7 +9,7 @@ What has been built, the decisions behind it, and what is next. The requirements
 | --- | --- | --- |
 | 1 | C++ matching engine, price-time priority, cancellation, tests | **Done.** CI green; 61/61 mutants killed on Linux and macOS. |
 | 2 | pybind11 bindings, exchange API, discrete-event loop, integration tests | **Done.** 68 review findings, all reproduced and fixed with tests. |
-| 3 | Trading agents, market dynamics, portfolio accounting | Not started |
+| 3 | Trading agents, market dynamics, portfolio accounting | **Done.** Five strategies, a market environment, exact accounting, agents in the API. |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Not started |
 | 5 | Next.js frontend, WebSocket integration, visualisations | Not started |
 | 6 | Benchmarks, profiling, optimisation, documentation | Not started |
@@ -158,6 +158,65 @@ tests; 68 findings, every one reproduced by an independent verifier before it wa
 * Sessions live in memory only. Persistence arrives with PostgreSQL in Phase 4.
 * The live runner falls behind rather than skipping work when a simulation cannot keep up with
   the requested speed.
+
+## Phase 3: trading agents, market dynamics, portfolio accounting
+
+**Delivered:**
+* **Market environment** (`simulation/environment.py`). It is a participant with a reserved id,
+  so its timers are digested events and its liquidity shocks are real orders. It provides:
+  * hidden fundamentals: a log-space martingale with calm and volatile regimes;
+  * public news and unannounced shocks, as Poisson jumps;
+  * liquidity shocks that sweep the book;
+  * trading-activity levels;
+  * cointegrated pairs (the leader's moves plus an Ornstein–Uhlenbeck deviation).
+* **Portfolio accounting** (`simulation/portfolio.py`). Exact `Fraction` cash and positions for
+  every participant, average-cost realized P&L, and marks at the midprice, else the last trade,
+  else the reference price. The kernel books both sides of every trade before any callback.
+* **Agents** (`agents/`):
+  * the `TradingAgent` base: Poisson action times scaled by activity, resting-order tracking,
+    order history, statistics;
+  * the random, inventory-aware market-making, momentum, fundamental and pairs strategies;
+  * a population builder.
+* **Kernel additions:** news events, `on_news`, the environment starting first, and context
+  access to portfolio, activity, marks, news and (for participants granted one) a noisy signal.
+  `deterministic_exp` is within 1 ulp.
+* **API:** agent populations and market parameters when creating a simulation; `/api/agents`,
+  `/api/agents/{id}` and `/api/news`; `agents` and `news` stream messages; fundamental values in
+  market data (the observer's view only).
+
+Documentation is in [trading-agents.md](trading-agents.md).
+
+**Key decisions:**
+* **The environment is a participant**, not a special case in the kernel. Its randomness, timers
+  and liquidity-shock orders get the same ordering, digest and accounting as everything else.
+* **Accounting belongs to the kernel**, not the agents, and is exact. Agents cannot misreport
+  P&L, and conservation of cash and shares is an exact, tested invariant rather than a
+  floating-point approximation.
+* **Information is granted, not assumed.** Only participants with `signal_noise` get a view of
+  fundamentals, and only of the present. Look-ahead is impossible by construction.
+* **Every strategy parameter is relative to price**, so the strategies behave the same on every
+  instrument.
+* **Calibration was measured, not assumed.** The fundamental traders' capacity was raised after
+  measurement showed prices drifting 1.1% from value on average; it is now 0.33% (see
+  trading-agents.md).
+
+**Found while building it:** a market maker's quote computed as 10004.9999… in floating point
+was floored a whole tick low. Tick rounding now has a 1e-6 tolerance.
+
+**Verification:**
+* Portfolio worked examples, and a Hypothesis property: conservation, realized + unrealized =
+  equity change, zero-sum.
+* Environment behaviour, including exact news impacts and the stationary pair deviation.
+* Every strategy's decision rule, against a recording fake context.
+* Whole-market tests: exact conservation, books agreeing with fills, prices tracking
+  fundamentals, every strategy trading, no rejected agent orders, and a cross-platform golden
+  digest.
+
+**Limitations:**
+* Each agent trades one instrument, or one pair.
+* The market maker's fair value comes from trades only.
+* Indicators are sampled at Poisson times.
+* There are no fees or borrowing costs, and one market-wide regime.
 
 ## Working conventions
 

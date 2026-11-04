@@ -6,9 +6,10 @@ environment for studying the resulting market behaviour.
 
 > Everything is simulated. No real money, brokerage accounts, or real-world order routing.
 
-**Status:** Phases 1 and 2 of 6 are complete: the matching engine, the Python bindings, the
-discrete-event simulation kernel and the exchange API. Trading agents, analytics and the
-frontend come next; see the [roadmap](docs/architecture.md#phase-status).
+**Status:** Phases 1 to 3 of 6 are complete: the matching engine, the Python bindings, the
+discrete-event simulation kernel, the exchange API, and autonomous trading agents in a market
+environment with hidden fundamentals and news. Analytics, experiments and the frontend come
+next; see the [roadmap](docs/architecture.md#phase-status).
 
 ## Matching engine (C++20)
 
@@ -60,6 +61,26 @@ Sell 10 @ 101, Sell 5 @ 102, then Buy 12 @ 102
   - A WebSocket stream with bounded per-client queues.
   - A live runner that paces simulated time by measured wall-clock time × speed.
   - One error format for every failure.
+
+## Trading agents and market dynamics (Python)
+
+- **Five strategies** compete in the exchange:
+  - zero-intelligence random traders;
+  - inventory-aware market makers that track spread earned and adverse selection;
+  - moving-average momentum traders;
+  - fundamental traders acting on a noisy private signal;
+  - pairs traders using a rolling z-score computed from past observations only.
+- **A market environment** with:
+  - hidden fundamental values that follow a random walk with calm and volatile regimes;
+  - public news and unannounced shocks;
+  - liquidity shocks that sweep the book;
+  - trading-activity levels;
+  - cointegrated pairs.
+- **Exact portfolio accounting.** The kernel keeps every participant's cash and positions as
+  exact fractions, with average-cost realized P&L. Cash and shares are conserved exactly, and
+  the tests check it after every market run.
+
+The details are in [docs/trading-agents.md](docs/trading-agents.md).
 
 ## Quick start
 
@@ -121,6 +142,27 @@ print(summary.trades, summary.volume, summary.digest)   # identical on every run
 The kernel's design, including its event ordering, lifecycle and determinism guarantees, is
 described in [docs/simulation-engine.md](docs/simulation-engine.md).
 
+A whole market of agents, run headless, with P&L summed per strategy:
+
+```python
+from udeshi_markets.agents import PopulationConfig, TradingAgent, market_simulation
+from udeshi_markets.simulation import MINUTE, EnvironmentConfig, PairConfig, SimulationConfig
+
+simulation = market_simulation(
+    SimulationConfig(duration_ns=10 * MINUTE, seed=7),
+    PopulationConfig(),  # 10 random, 5 market makers, 5 momentum, 5 fundamental, 1 pairs
+    EnvironmentConfig(pairs=(PairConfig("ACME", "NOVA"),)),
+)
+summary = simulation.run()
+marks = simulation.marks()
+pnl: dict[str, float] = {}
+for pid, agent in simulation.participants.items():
+    if isinstance(agent, TradingAgent):
+        total = float(simulation.portfolio(pid).total_pnl(marks))
+        pnl[agent.strategy] = pnl.get(agent.strategy, 0.0) + total
+print(summary.trades, {strategy: round(value) for strategy, value in sorted(pnl.items())})
+```
+
 ## Testing
 
 ```bash
@@ -150,14 +192,15 @@ flowchart LR
 ```
 
 Details: [architecture](docs/architecture.md) · [matching engine](docs/matching-engine.md) ·
-[simulation kernel](docs/simulation-engine.md) · [API](docs/api.md) ·
-[development log](docs/development-log.md)
+[simulation kernel](docs/simulation-engine.md) · [trading agents](docs/trading-agents.md) ·
+[API](docs/api.md) · [development log](docs/development-log.md)
 
 ## Repository layout
 
 ```
 engine/          C++20 matching engine: public headers, implementation, GoogleTest suite
-python/          pybind11 bindings and the udeshi_markets package (simulation kernel), tests
+python/          pybind11 bindings and the udeshi_markets package (simulation kernel, market
+                 environment, trading agents), tests
 backend/         FastAPI service (udeshi_api), tests, Dockerfile
 tools/           mutation testing
 docs/            design documentation

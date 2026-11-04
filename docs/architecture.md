@@ -16,8 +16,8 @@ flowchart TB
     subgraph Py["Python 3.12 (python/, backend/)"]
         BIND["pybind11 bindings<br/>udeshi_markets._engine"]
         SIM["Discrete-event simulation kernel<br/>event queue · simulated clock · recorder · digest"]
-        ENV["Market environment (Phase 3)<br/>fundamentals · news · volatility regimes"]
-        AG["Trading agents (Phase 3)<br/>random · market maker · momentum · fundamental · pairs"]
+        ENV["Market environment<br/>fundamentals · news · volatility regimes"]
+        AG["Trading agents<br/>random · market maker · momentum · fundamental · pairs"]
         AN["Analytics (Phase 4)<br/>market · agent · microstructure metrics"]
         XP["Experiment runner (Phase 4)<br/>Monte Carlo · parameter sweeps · CSV"]
         API["FastAPI service<br/>REST · WebSocket · live runner"]
@@ -45,8 +45,8 @@ flowchart TB
     API <-->|REST / WebSocket| FE
 ```
 
-The engine, the bindings, the simulation kernel and the API exist today. Components labelled
-with a later phase are planned.
+The engine, the bindings, the simulation kernel, the market environment, the trading agents and
+the API exist today. Components labelled with a later phase are planned.
 
 ## Layering rules
 
@@ -68,8 +68,9 @@ with a later phase are planned.
 5. **Participants see only what a real one could.** A participant acts through a context bound
    to its own identity. It can cancel only its own orders, and it observes public market data
    (an anonymous tape, aggregated depth) plus reports about its own orders. Fundamental values
-   and news will live in the market environment (Phase 3), outside the exchange, so look-ahead
-   bias is ruled out by construction.
+   live in the market environment, outside the exchange: participants learn of them only
+   through public news and, if granted one, a noisy private signal of the current value. The
+   future is generated lazily, so look-ahead bias is ruled out by construction.
 6. **One thread owns each exchange.** The engine is single-threaded by design. In the API every
    handler is a coroutine on one asyncio event loop (a test enforces this), so nothing touches an
    exchange concurrently and no locks are needed.
@@ -113,7 +114,9 @@ udeshi-markets/
 ├── python/
 │   ├── bindings/module.cpp             pybind11 module udeshi_markets._engine
 │   ├── udeshi_markets/                 Python package: engine API, type stubs
-│   │   └── simulation/                 kernel, events, participants, recorder, RNG, config
+│   │   ├── simulation/                 kernel, events, participants, recorder, RNG, config,
+│   │   │                               market environment, portfolio accounting
+│   │   └── agents/                     agent framework, five strategies, population builder
 │   └── tests/                          pytest: bindings, stubs, RNG, recorder, kernel
 ├── backend/
 │   ├── udeshi_api/                     FastAPI app: routes, sessions, runner, stream hub
@@ -129,8 +132,8 @@ udeshi-markets/
     └── mutation.yml                    weekly mutation run on Linux and macOS
 ```
 
-Later phases add the agents and market environment (under `python/udeshi_markets/`),
-`frontend/` (Next.js) and `bench/` (benchmarks).
+Later phases add analytics and experiments (under `python/udeshi_markets/`), `frontend/`
+(Next.js) and `bench/` (benchmarks).
 
 ## Phase status
 
@@ -138,7 +141,7 @@ Later phases add the agents and market environment (under `python/udeshi_markets
 | --- | --- | --- |
 | 1 | C++ matching engine, price-time priority, cancellation, tests | Done |
 | 2 | pybind11 bindings, exchange API, discrete-event loop | Done |
-| 3 | Trading agents, market dynamics, portfolio accounting | Planned |
+| 3 | Trading agents, market dynamics, portfolio accounting | Done |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Planned |
 | 5 | Frontend, WebSockets, visualisations | Planned |
 | 6 | Benchmarks, profiling, optimisation, docs | Planned |
@@ -149,5 +152,7 @@ Later phases add the agents and market environment (under `python/udeshi_markets
   verification.
 * [simulation-engine.md](simulation-engine.md): the discrete-event kernel, participants,
   determinism and the run digest.
+* [trading-agents.md](trading-agents.md): the strategies, the market environment and portfolio
+  accounting, with their mathematics.
 * [api.md](api.md): REST endpoints, the WebSocket stream and the error format.
 * [development-log.md](development-log.md): what was built in each phase, and why.
