@@ -6,14 +6,15 @@ environment for studying the resulting market behaviour.
 
 > Everything is simulated. No real money, brokerage accounts, or real-world order routing.
 
-**Status:** Phases 1 to 4 of 6 are complete:
+**Status:** Phases 1 to 5 of 6 are complete:
 - the matching engine;
 - the Python bindings, the discrete-event simulation kernel and the exchange API;
 - autonomous trading agents in a market environment with hidden fundamentals and news;
 - quantitative analytics, and an experiment framework with Monte Carlo runs and PostgreSQL
-  persistence.
+  persistence;
+- a real-time trading terminal and experiment dashboard (Next.js).
 
-The frontend and benchmarks come next; see the [roadmap](docs/architecture.md#phase-status).
+Benchmarks come next; see the [roadmap](docs/architecture.md#phase-status).
 
 ## Matching engine (C++20)
 
@@ -102,6 +103,30 @@ The details are in [docs/trading-agents.md](docs/trading-agents.md).
 Details: [docs/quantitative-metrics.md](docs/quantitative-metrics.md) and
 [docs/market-microstructure.md](docs/market-microstructure.md).
 
+## Trading terminal (Next.js)
+
+![The trading terminal: markets, chart, order book, leaderboard and trade tape](docs/images/terminal.png)
+
+- **Live market views**, updated over one WebSocket per simulation:
+  - market overview;
+  - order book ladder with depth chart;
+  - candlestick chart with volume, trade prints, news markers and the hidden fundamental value;
+  - trade tape naming buyer and seller;
+  - sortable agent leaderboard with per-agent detail;
+  - order entry as the API user.
+- **Simulation controls:** start, pause, resume, step, stop, reset and speed, plus a
+  configuration dialog for the agent population and the market environment.
+- **Experiment dashboard:** create sweeps and Monte Carlo runs, watch them progress, see each
+  metric's distribution per sweep point, and compare points with Welch's t-test.
+- **Display only.** Every number on screen is computed by the backend (even the cumulative
+  depth). The TypeScript types are generated from the API's OpenAPI schema.
+- **Tested:**
+  - unit tests of the stream reducer and connection;
+  - Playwright tests that drive the real backend and check the values shown against the REST
+    API.
+
+Details: [docs/frontend.md](docs/frontend.md).
+
 ## Quick start
 
 Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), CMake ≥ 3.24, Ninja, and a C++20
@@ -110,10 +135,12 @@ compiler (Clang 15+ or GCC 12+).
 ```bash
 uv sync --all-packages              # builds the C++ extension, installs both packages
 uv run python -m udeshi_api         # API on http://127.0.0.1:8000 (docs at /docs)
+cd frontend && npm ci && npm run dev    # terminal on http://localhost:3000 (Node 22.12+)
 ```
 
-Or run it in containers, the API with PostgreSQL for experiment results: `docker compose up --build`.
-Without `UDESHI_DATABASE_URL`, the API keeps experiments in an in-memory SQLite database.
+Or run everything in containers (terminal, API, and PostgreSQL for experiment results):
+`docker compose up --build`, then open http://localhost:3000. Without `UDESHI_DATABASE_URL`,
+the API keeps experiments in an in-memory SQLite database.
 
 ```bash
 B=http://127.0.0.1:8000
@@ -213,10 +240,14 @@ uv run mypy                                     # --strict
 uv run ruff check python backend && uv run ruff format --check python backend
 
 python3 tools/mutation_test.py --jobs 4         # the suite must catch all 61 injected bugs
+
+cd frontend
+npm run lint && npm run typecheck && npm test   # ESLint, tsc (strict), Vitest
+npx playwright test                             # end to end, starts the API and the terminal
 ```
 
 CI runs all of these on Linux (GCC) and macOS (Clang), and builds and smoke-tests the Docker
-image.
+images.
 
 ## Architecture
 
@@ -233,7 +264,7 @@ flowchart LR
 Details: [architecture](docs/architecture.md) · [matching engine](docs/matching-engine.md) ·
 [simulation kernel](docs/simulation-engine.md) · [trading agents](docs/trading-agents.md) ·
 [metrics](docs/quantitative-metrics.md) · [microstructure](docs/market-microstructure.md) ·
-[API](docs/api.md) · [development log](docs/development-log.md)
+[API](docs/api.md) · [frontend](docs/frontend.md) · [development log](docs/development-log.md)
 
 ## Repository layout
 
@@ -242,6 +273,7 @@ engine/          C++20 matching engine: public headers, implementation, GoogleTe
 python/          pybind11 bindings and the udeshi_markets package (simulation kernel, market
                  environment, trading agents, analytics, experiments), tests
 backend/         FastAPI service (udeshi_api), tests, Dockerfile
+frontend/        Next.js trading terminal and experiment dashboard, Vitest and Playwright tests
 tools/           mutation testing
 docs/            design documentation
 ```
@@ -249,5 +281,5 @@ docs/            design documentation
 ## Technology
 
 C++20 · CMake · GoogleTest · Python 3.12 · pybind11 · scikit-build-core · uv · FastAPI ·
-Pydantic · SQLAlchemy · PostgreSQL · pytest · Hypothesis · mypy · Ruff · Docker. Planned for later
-phases: Next.js · TypeScript · Tailwind · Playwright.
+Pydantic · SQLAlchemy · PostgreSQL · pytest · Hypothesis · mypy · Ruff · Docker · Next.js ·
+React · TypeScript · Tailwind CSS · lightweight-charts · Zustand · Vitest · Playwright.

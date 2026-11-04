@@ -11,7 +11,7 @@ What has been built, the decisions behind it, and what is next. The requirements
 | 2 | pybind11 bindings, exchange API, discrete-event loop, integration tests | **Done.** 68 review findings, all reproduced and fixed with tests. |
 | 3 | Trading agents, market dynamics, portfolio accounting | **Done.** Five strategies, a market environment, exact accounting, agents in the API. |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | **Done.** Documented metrics, an experiment framework, persistent experiments in the API. |
-| 5 | Next.js frontend, WebSocket integration, visualisations | Not started |
+| 5 | Next.js frontend, WebSocket integration, visualisations | **Done.** A live trading terminal and an experiment dashboard, tested end to end against the real backend. |
 | 6 | Benchmarks, profiling, optimisation, documentation | Not started |
 
 ## Phase 1: matching engine
@@ -327,32 +327,127 @@ Integration also removed an observer leak: each live reset left one more observe
 * Live analytics read horizons at tick granularity.
 * p-values from a handful of runs assume roughly normal sample means.
 
-## Next: Phase 5 (frontend)
+## Phase 5: trading terminal, WebSocket integration, visualisations
 
-Not started; waiting for the user's go-ahead. Scope (brief §10, lines 343–429 of
-[project-brief.md](project-brief.md)): a Next.js + TypeScript + Tailwind trading terminal with:
-* a market overview;
-* a live order book with a depth visualisation;
-* price charts with news markers;
-* a trade tape;
-* a sortable agent leaderboard;
-* simulation controls;
-* an experiment dashboard (create, run, compare, distributions);
-* Playwright tests of the important interactions.
+**Delivered** (`frontend/`, documented in [frontend.md](frontend.md)):
+* **A Next.js 16 trading terminal** (React 19, TypeScript strict, Tailwind 4, exact versions
+  pinned):
+  * market overview with volatility;
+  * a live order book with a depth chart;
+  * candles with volume, trade prints, news markers and the hidden fundamental value;
+  * a trade tape naming buyer and seller;
+  * a sortable leaderboard with per-agent detail;
+  * order entry as the API user;
+  * simulation controls with a configuration dialog.
+* **An experiment dashboard:**
+  * create experiments, sweeps included, and follow their progress;
+  * inspect each metric's distribution per sweep point (box, whiskers, mean with its 95%
+    interval, and every run as a dot);
+  * compare any two points with Welch's t-test, with CSV downloads throughout.
+* **Live data:**
+  * one WebSocket per simulation, applied by a pure reducer: the snapshot replaces
+    everything, then each update replaces or appends;
+  * batched delivery, at most one render per 33 ms;
+  * reconnection with backoff, ending only for unknown or deleted simulations.
+* **Typed end to end.** TypeScript types are generated from the API's OpenAPI schema; CI
+  regenerates them and fails if they differ.
+* **Backend additions for the terminal:**
+  * every trade's `buyer` and `seller` (the observer's tape, below);
+  * `cumulative_quantity` on book levels;
+  * `change_percent` on news;
+  * a cap with an `omitted` count on streamed trade batches;
+  * `python -m udeshi_api.openapi`;
+  * CORS for `127.0.0.1:3000` too.
+* **Delivery:**
+  * a terminal Docker image (standalone server, non-root, API address read at startup);
+  * a `web` service in Compose, so `docker compose up` starts the whole stack;
+  * a CI job: ESLint, Prettier, tsc, Vitest, the generated-types check, and Playwright
+    against the real backend;
+  * the Docker job builds and smoke-tests the terminal image.
 
-Design: dark, dense, subtle borders, professional charts, nothing that looks like a generic
-dashboard. The frontend displays what the backend computes and does no financial calculation.
+**Key decisions:**
+* **The observer's tape.** The brief's tape shows buyer and seller, but agents must not learn
+  their counterparties. The recorder's tape stays anonymous, and agents read only that. The
+  API, an observer like the analytics (it already shows hidden fundamental values), learns
+  the counterparties from the kernel's observer hook and names them. A test reconciles every
+  trade's counterparties with each participant's own portfolio.
+* **Display only, enforced by the API.** Wherever a panel needed a derived number, the
+  backend gained it rather than the frontend computing it:
+  * cumulative depth;
+  * candles aggregated to the chosen interval;
+  * volatility;
+  * a news item's percent change.
+* **A store, not a cache.** One Zustand store holds what the stream delivered. Everything
+  REST-only goes through one `usePoll` hook. In that hook, a key means a different thing
+  (drop the old result) and a version means the same thing changed (keep showing it until
+  the new one arrives); late answers are discarded; failures are retried and reported.
+* **Tests against the real stack.** Playwright starts the FastAPI backend and a production
+  build. Each test steps a paused market by a fixed number of events, so what is on screen
+  is deterministic and can be checked value by value against the REST API.
+* **Parallel build, one design.**
+  * Five agents built the panels in parallel, each in its own git worktree with its own
+    files and test spec, on one shared scaffold: tokens, primitives, client, store, and test
+    harness.
+  * After merging, duplicated helpers were folded into `src/lib`: one error description and
+    one polling hook.
 
-Everything it needs already exists in the API (see [api.md](api.md)):
-* simulations, markets, agents, news, experiments and live analytics over REST;
-* one WebSocket stream per simulation, with a snapshot followed by updates, and the message
-  types `snapshot`, `simulation`, `book`, `market`, `trades`, `bars`, `news`, `agents` and
-  `closed`.
+**Found by the review and fixed** (11 bugs, each reproduced first and kept as a regression
+test, most in `e2e/regressions.spec.ts`):
+* **While paused,** open orders were not refetched after a step (a filled order kept a
+  Cancel button), and the market totals missed manual trades. One `useMoment()` signal (the
+  time and the newest trade id) now drives every REST panel while paused.
+* **Requests that failed once** (load, duration, totals, picker list) left a panel empty
+  until reload, with no message. Failures are now retried, logged and shown.
+* **A late news answer** for an outdated request replaced the newer marker list. (It was
+  already gone once the polling hooks were merged; the reproduction now guards it.)
+* **The "API unreachable" status** never cleared when the API came back.
+* **News impact** (a change in the log fundamental) was shown as a percent change: +30% for
+  a +35% move. The backend now provides `change_percent`.
+* **Sweep points and summary metrics** could not be chosen from the keyboard.
+* **A big step** streamed trades whose counterparties the bounded ledger had already
+  evicted (buyer and seller null). Streamed batches are now capped at what the tape keeps,
+  with an `omitted` count.
+* **Observers missed an order** whose fill callback raised. Its trades were on the tape, but
+  the analytics and the counterparty ledger never saw them. The observers are now called in
+  a `finally` (golden digests unchanged).
+* **`python -m udeshi_api.openapi`** read the shell's environment and connected to its
+  database.
+* **The CI smoke test** of the terminal image would pass with broken static assets or a
+  baked-in API address. It now fetches a script and a stylesheet and checks the runtime
+  address.
 
-**Open decision:** the brief's trade tape shows buyer and seller, but the public tape is
-anonymous by design, since agents must not see counterparties. The frontend is an observer, so
-it could get an observer-only tape with participant ids. That would be a separate endpoint, and
-agents would still never see it.
+**Verification:**
+* Python: 423 tests (+7 this phase), with ruff and mypy `--strict` clean.
+* Frontend:
+  * 40 Vitest unit tests: the reducer, the connection, formatting, sorting, forms, chart
+    placement and experiment scales;
+  * 26 Playwright tests against the real backend;
+  * ESLint with no warnings;
+  * tsc strict with `noUncheckedIndexedAccess`;
+  * Prettier.
+* The terminal was checked visually at 1600×960 on live markets. The screenshots in the
+  README and [frontend.md](frontend.md) are generated by a Playwright spec.
+
+**Limitations:**
+* Analytics, totals, open orders, agent details and experiments are polled, not pushed.
+* Live analytics are recomputed over the whole run on each request: 35 ms at 30 simulated
+  minutes, 200 ms at 2 hours. Polling every 5 s keeps that small; incremental analytics are
+  Phase 6 work. The leaderboard's Sharpe ratios have the same cost profile.
+* The chart draws trade dots for the 200 most recent trades per symbol only.
+* The terminal trades as the one API user. There are no accounts, as in the brief.
+
+## Next: Phase 6 (benchmarks, profiling, optimisation, documentation)
+
+Not started; waiting for the user's go-ahead. Scope (brief §13–14 and the Phase 6 list):
+* **Benchmark the C++ engine.** Measure orders per second, mean, median, p95 and p99 latency,
+  and memory, across book sizes, numbers of price levels, submission patterns and
+  high-volume cancellation.
+* **Optimise only after measuring.** Profile first. Known candidates: incremental live
+  analytics and leaderboard Sharpe ratios, which today are linear in the run's length per
+  request.
+* **Write `docs/benchmarking.md`** with the methodology and hardware, and put measured
+  results in the README.
+* **Run the complete test suite** and finish the documentation.
 
 ## Working conventions
 
@@ -387,16 +482,24 @@ agents would still never see it.
   * Python: `.venv/bin/pytest`, `.venv/bin/mypy`, `.venv/bin/ruff check python backend`, and
     `ruff format --check`.
   * Check every exit code explicitly.
-* **CI** (`ci.yml`, 12 jobs):
+* **CI** (`ci.yml`, 13 jobs):
   * the engine on Linux and macOS in debug, release and ASan+UBSan builds;
   * the Python suite on Linux and macOS;
   * the built wheel, installed non-editable, on Linux and macOS;
-  * the Docker image;
+  * the frontend: lint, types, generated types, unit tests, Playwright;
+  * the Docker images (API and terminal);
   * the storage tests against real PostgreSQL.
 
   `mutation.yml` runs the 61 engine mutants weekly.
 * **The development machine has neither PostgreSQL nor Docker.** They run only in CI, so
   locally the storage tests use SQLite.
-* **Local port 8000 is taken.** `.claude/launch.json` (git-ignored) runs the API on 8010.
+* **Local port 8000 is taken.** `.claude/launch.json` (git-ignored) runs the API on 8010 and
+  the terminal (`web`) on 3000; `frontend/.env.development.local` (git-ignored) points the
+  terminal at 8010.
+* **Frontend checks:** in `frontend/`, run `npm run lint`, `npm run typecheck`, `npm test` and
+  `npx playwright test`. Playwright starts the API with `uv run` and the terminal with
+  `next build && next start`, on ports 8011 and 3100 (`E2E_*` variables override them).
+  After a backend schema change, run `uv run python -m udeshi_api.openapi >
+  frontend/openapi.json`, then `npm run generate:api`.
 * **Experiments spawn worker processes**, so drive them from a script file with an
   `if __name__ == "__main__":` guard, not from standard input.

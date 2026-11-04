@@ -27,7 +27,7 @@ flowchart TB
         PG[("PostgreSQL<br/>runs · trades · metrics")]
     end
 
-    subgraph UI["Next.js + TypeScript (Phase 5)"]
+    subgraph UI["Next.js + TypeScript (frontend/)"]
         FE["Trading terminal<br/>order book · charts · tape · leaderboard · experiments"]
     end
 
@@ -45,7 +45,7 @@ flowchart TB
     API <-->|REST / WebSocket| FE
 ```
 
-Everything except the frontend (Phase 5) exists today.
+Everything except the benchmarks (Phase 6) exists today.
 
 ## Layering rules
 
@@ -69,7 +69,11 @@ Everything except the frontend (Phase 5) exists today.
    (an anonymous tape, aggregated depth) plus reports about its own orders. Fundamental values
    live in the market environment, outside the exchange: participants learn of them only
    through public news and, if granted one, a noisy private signal of the current value. The
-   future is generated lazily, so look-ahead bias is ruled out by construction.
+   future is generated lazily, so look-ahead bias is ruled out by construction. Observers are
+   different: the API and the analytics may see everything, including fundamental values and
+   each trade's buyer and seller, because they never trade on it. (The API user who trades
+   through the order ticket is the exception the terminal makes: it is the observer's seat,
+   so its view is wider than an agent's.)
 6. **One thread owns each exchange.** The engine is single-threaded by design. In the API every
    handler is a coroutine on one asyncio event loop (a test enforces this), so nothing touches an
    exchange concurrently and no locks are needed.
@@ -124,16 +128,24 @@ udeshi-markets/
 │   ├── tests/                          pytest: REST, WebSocket, runner, hub
 │   └── Dockerfile                      multi-stage image, hash-pinned dependencies, non-root
 ├── pyproject.toml, uv.lock             uv workspace (udeshi-markets + udeshi-api), tool config
-├── docker-compose.yml                  the API service
+├── frontend/                           Next.js trading terminal (see frontend.md)
+│   ├── src/app/                        pages: the terminal (/) and experiments
+│   ├── src/components/                 panels: book, chart, tape, leaderboard, controls, …
+│   ├── src/lib/                        typed API client, generated types, stream store
+│   ├── e2e/                            Playwright tests against the real backend
+│   └── Dockerfile                      standalone Next.js server, non-root
+├── docker-compose.yml                  terminal + API + PostgreSQL
 ├── tools/mutation_test.py              mutation testing of the engine test suite
 ├── docs/                               design documentation
 └── .github/workflows/
     ├── ci.yml                          engine (Linux + macOS × debug / release / ASan+UBSan),
-    │                                   Python (ruff, mypy --strict, pytest), Docker image
+    │                                   Python (ruff, mypy --strict, pytest), PostgreSQL,
+    │                                   wheels, frontend (ESLint, tsc, Vitest, Playwright),
+    │                                   Docker images
     └── mutation.yml                    weekly mutation run on Linux and macOS
 ```
 
-Later phases add `frontend/` (Next.js) and `bench/` (benchmarks).
+Phase 6 adds `bench/` (benchmarks).
 
 ## Phase status
 
@@ -143,7 +155,7 @@ Later phases add `frontend/` (Next.js) and `bench/` (benchmarks).
 | 2 | pybind11 bindings, exchange API, discrete-event loop | Done |
 | 3 | Trading agents, market dynamics, portfolio accounting | Done |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Done |
-| 5 | Frontend, WebSockets, visualisations | Planned |
+| 5 | Frontend, WebSockets, visualisations | Done |
 | 6 | Benchmarks, profiling, optimisation, docs | Planned |
 
 ## Further reading

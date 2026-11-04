@@ -117,7 +117,7 @@ same symbol twice, and an instrument following two leaders.
 | --- | --- |
 | `GET /api/agents` | Every participant, in id order: the agents, the market environment (id `999999`, strategy `environment`; its trades are the liquidity shocks) and the API user (id `1000000`, strategy `manual`). Each has `strategy`, `symbols`, `cash`, `equity`, `total_pnl`, `realized_pnl`, `unrealized_pnl`, `return_pct`, `sharpe_ratio` (per hour, from the live analytics; `null` until defined, and for simulations without a market), `positions` (shares per symbol), `trades`, `orders_submitted`, `fills` and `filled_quantity`. |
 | `GET /api/agents/{id}` | The same, plus `position_details` (quantity, average price, realized and unrealized P&L, shares bought and sold), `open_orders`, its last 50 order reports (`recent_orders`), `stats` (orders, rejections, cancels, fills, aggressive and passive fills; `null` for the user and the environment) and the strategy's own `metrics`: for a market maker `spread_earned`, `adverse_selection` and `markouts_measured`; for a pairs trader its last `z_score`; for the environment its news, shock and regime counts. |
-| `GET /api/news?limit=50` | Published news, oldest first: `time_seconds`, `symbol`, `impact` (the change in the log fundamental), `sentiment` (`positive`, `negative`, or `neutral` for news that moved nothing) and `headline`. Unannounced shocks never appear. |
+| `GET /api/news?limit=50` | Published news, oldest first: `time_seconds`, `symbol`, `impact` (the change in the log fundamental), `change_percent` (the same change in percent, (e^impact − 1) × 100), `sentiment` (`positive`, `negative`, or `neutral` for news that moved nothing) and `headline`. Unannounced shocks never appear. |
 
 **Accounting.** Cash and positions come from the kernel's portfolios, which book every
 execution exactly (with rational numbers) and use average-cost realized P&L. Positions are valued
@@ -183,7 +183,7 @@ stored per run, not the full time series.
    | `simulation` | `state`, `time_seconds`, `progress`, `speed`, `error`. Sent only when one of them changes. |
    | `book` | The same fields as the order-book endpoint, for a symbol whose book changed. |
    | `market` | The market summary for that symbol. |
-   | `trades` | `symbol` and the new trades, with `buyer` and `seller` as on the tape endpoint. |
+   | `trades` | `symbol`, the new trades (with `buyer` and `seller`, as on the tape endpoint) and `omitted`. A jump in simulated time can trade more than the tape keeps: the message carries the newest 1,000 (never more than `UDESHI_TRADE_HISTORY`), each with its counterparties, and counts the rest in `omitted`. |
    | `bars` | `symbol`, the newly closed OHLCV bars, and `omitted`. A jump in simulated time (a step to the end, a fast tick) can close many bars at once: the message carries the newest 1,000 and counts the rest in `omitted`; the history endpoint has them all. |
    | `news` | One published news item (the fields of `GET /api/news`), for subscribed symbols. It comes before the book and trade updates of the same tick. |
    | `agents` | The leaderboard: every participant, as in `GET /api/agents`. Sent at most once per second of wall time, only when something in it changed, and only for simulations with agents or a market environment. |
