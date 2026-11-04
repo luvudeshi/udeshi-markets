@@ -1,5 +1,6 @@
 """Simulation configuration (immutable, validated at construction)."""
 
+import math
 from dataclasses import dataclass, field
 
 from udeshi_markets._engine import price_to_ticks
@@ -51,6 +52,9 @@ class SimulationConfig:
     """Delay between a participant submitting an order or cancel and its arrival at the exchange."""
     bar_interval_ns: int = SECOND
     """Width of the OHLCV bars recorded for every instrument."""
+    initial_cash: float = 1_000_000.0
+    """Cash every participant starts with, in currency. There is no credit check: cash can go
+    negative (margin), and positions can be short."""
     recent_trade_capacity: int = 1_000
     """Trades per instrument kept by the exchange's own recent-trade buffer."""
     trade_history_limit: int | None = None
@@ -76,6 +80,8 @@ class SimulationConfig:
                 f"{bars} bars (instruments x duration / bar interval) is more than {MAX_BARS}: "
                 "use a wider bar interval or a shorter duration"
             )
+        if not (math.isfinite(self.initial_cash) and self.initial_cash >= 0):
+            raise ValueError("initial_cash must be finite and non-negative")
         if self.recent_trade_capacity <= 0:
             raise ValueError("recent_trade_capacity must be positive")
         if self.trade_history_limit is not None and self.trade_history_limit <= 0:

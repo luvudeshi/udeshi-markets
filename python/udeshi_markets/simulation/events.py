@@ -78,7 +78,29 @@ class Wakeup:
     tag: str
 
 
-Event = OrderArrival | CancelArrival | Wakeup
+@dataclass(frozen=True, slots=True)
+class News:
+    """A public announcement about one instrument. ``impact`` is the change it caused in the
+    log fundamental value (positive news: ``impact`` > 0)."""
+
+    time: int
+    instrument: int
+    impact: float
+    headline: str
+
+    @property
+    def sentiment(self) -> int:
+        return 1 if self.impact > 0 else -1
+
+
+@dataclass(frozen=True, slots=True)
+class NewsArrival:
+    """A news item reaching every participant."""
+
+    news: News
+
+
+Event = OrderArrival | CancelArrival | Wakeup | NewsArrival
 
 
 @dataclass(frozen=True, slots=True)

@@ -54,6 +54,32 @@ def deterministic_log(x: float) -> float:
     return exponent * _LN2_HI + (2.0 * s + (2.0 * s * z * series + exponent * _LN2_LO))
 
 
+_EXP_OVERFLOW: Final = 709.782712893384  # Just below ln(DBL_MAX).
+_EXP_UNDERFLOW: Final = -745.1332191019412  # Below this, exp rounds to zero.
+_INV_FACTORIALS: Final = tuple(1.0 / math.factorial(k) for k in range(15, 1, -1))
+
+
+def deterministic_exp(x: float) -> float:
+    """e**x computed with exactly rounded arithmetic only (within 2 ulps; platform-independent).
+
+    Uses x = k*ln(2) + r with |r| <= ln(2)/2, where k*ln(2) is subtracted in two parts so the
+    reduction is exact, then a degree-14 Taylor polynomial for e**r in Horner form, then an exact
+    scaling by 2**k. Raises OverflowError above ln(DBL_MAX), like math.exp.
+    """
+    if math.isnan(x):
+        raise ValueError("deterministic_exp: argument is NaN")
+    if x > _EXP_OVERFLOW:
+        raise OverflowError(f"deterministic_exp: {x!r} overflows")
+    if x < _EXP_UNDERFLOW:
+        return 0.0
+    k = round(x / (_LN2_HI + _LN2_LO))
+    r = (x - k * _LN2_HI) - k * _LN2_LO
+    poly = 0.0
+    for coefficient in _INV_FACTORIALS:  # 1/15!, 1/14!, ..., 1/2!
+        poly = poly * r + coefficient
+    return math.ldexp(1.0 + (r + r * r * poly), k)
+
+
 class DeterministicRng:
     """SplitMix64 generator with platform-independent distributions."""
 

@@ -6,9 +6,17 @@ from udeshi_markets.simulation.config import (
     InstrumentConfig,
     SimulationConfig,
 )
+from udeshi_markets.simulation.environment import (
+    ENVIRONMENT_ID,
+    EnvironmentConfig,
+    MarketEnvironment,
+    PairConfig,
+)
 from udeshi_markets.simulation.events import (
     CancelArrival,
     EventQueue,
+    News,
+    NewsArrival,
     OrderArrival,
     OrderIntent,
     ScheduledEvent,
@@ -16,6 +24,7 @@ from udeshi_markets.simulation.events import (
 )
 from udeshi_markets.simulation.kernel import (
     ChangeSet,
+    EnvironmentContext,
     ParticipantFactory,
     Simulation,
     SimulationContext,
@@ -30,8 +39,9 @@ from udeshi_markets.simulation.participant import (
     OrderReport,
     Participant,
 )
+from udeshi_markets.simulation.portfolio import Portfolio, PortfolioView, Position
 from udeshi_markets.simulation.recorder import Bar, MarketRecorder, PublicTrade
-from udeshi_markets.simulation.rng import DeterministicRng, deterministic_log
+from udeshi_markets.simulation.rng import DeterministicRng, deterministic_exp, deterministic_log
 from udeshi_markets.simulation.scripted import (
     ScriptAction,
     ScriptedCancel,
@@ -51,6 +61,7 @@ from udeshi_markets.simulation.simtime import (
 
 __all__ = [
     "DEFAULT_INSTRUMENTS",
+    "ENVIRONMENT_ID",
     "HOUR",
     "MAX_BARS",
     "MICROSECOND",
@@ -64,15 +75,24 @@ __all__ = [
     "CancelStatus",
     "ChangeSet",
     "DeterministicRng",
+    "EnvironmentConfig",
+    "EnvironmentContext",
     "EventQueue",
     "Fill",
     "InstrumentConfig",
+    "MarketEnvironment",
     "MarketRecorder",
+    "News",
+    "NewsArrival",
     "OrderArrival",
     "OrderIntent",
     "OrderReport",
+    "PairConfig",
     "Participant",
     "ParticipantFactory",
+    "Portfolio",
+    "PortfolioView",
+    "Position",
     "PublicTrade",
     "ScheduledEvent",
     "ScriptAction",
@@ -86,6 +106,7 @@ __all__ = [
     "SimulationStateError",
     "SimulationSummary",
     "Wakeup",
+    "deterministic_exp",
     "deterministic_log",
     "seconds",
     "to_seconds",

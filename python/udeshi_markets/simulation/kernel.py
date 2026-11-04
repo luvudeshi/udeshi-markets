@@ -16,8 +16,11 @@ import contextlib
 import enum
 import hashlib
 import struct
+from collections import deque
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
+from fractions import Fraction
 from types import MappingProxyType
 
 from udeshi_markets._engine import (
@@ -31,12 +34,15 @@ from udeshi_markets._engine import (
     SubmitResult,
 )
 from udeshi_markets.simulation.config import SimulationConfig
+from udeshi_markets.simulation.environment import MarketEnvironment
 from udeshi_markets.simulation.events import (
     INT64_MAX,
     UINT32_MAX,
     UINT64_MAX,
     CancelArrival,
     EventQueue,
+    News,
+    NewsArrival,
     OrderArrival,
     OrderIntent,
     ScheduledEvent,
@@ -50,8 +56,9 @@ from udeshi_markets.simulation.participant import (
     OrderReport,
     Participant,
 )
+from udeshi_markets.simulation.portfolio import Portfolio, PortfolioView, exact_tick
 from udeshi_markets.simulation.recorder import Bar, MarketRecorder, PublicTrade
-from udeshi_markets.simulation.rng import DeterministicRng
+from udeshi_markets.simulation.rng import DeterministicRng, deterministic_exp
 
 
 class SimulationState(enum.Enum):
@@ -83,6 +90,7 @@ class ChangeSet:
     instruments: frozenset[int]  # Instruments whose order book changed.
     trades: tuple[PublicTrade, ...]
     bars: tuple[Bar, ...]
+    news: tuple[News, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +107,7 @@ class SimulationSummary:
 
 
 # Digest record kinds.
-_ORDER, _CANCEL, _WAKEUP, _END = 1, 2, 3, 4
+_ORDER, _CANCEL, _WAKEUP, _END, _NEWS = 1, 2, 3, 4, 5
 # Cancel outcomes as digested. "Not the owner" is recorded but never reported: the participant
 # is told NOT_FOUND, so cancels cannot be used to discover other participants' orders.
 _CANCELLED, _NOT_FOUND, _NOT_OWNER, _UNKNOWN_INSTRUMENT = 0, 1, 2, 3
@@ -121,12 +129,19 @@ class SimulationContext:
     """A participant's handle on the simulation: its identity is bound, so it can act only for
     itself, and it sees only public market data and reports about its own orders."""
 
-    __slots__ = ("_participant_id", "_rng", "_simulation")
+    __slots__ = ("_participant_id", "_portfolio", "_rng", "_simulation")
 
-    def __init__(self, simulation: Simulation, participant_id: int, rng: DeterministicRng) -> None:
+    def __init__(
+        self,
+        simulation: Simulation,
+        participant_id: int,
+        rng: DeterministicRng,
+        portfolio: PortfolioView,
+    ) -> None:
         self._simulation = simulation
         self._participant_id = participant_id
         self._rng = rng
+        self._portfolio = portfolio
 
     @property
     def participant_id(self) -> int:
@@ -154,6 +169,44 @@ class SimulationContext:
 
     def tick_size(self, instrument: int) -> float:
         return self._simulation.exchange.instrument(instrument).tick_size
+
+    def reference_price(self, instrument: int) -> int:
+        """The instrument's starting reference price, in ticks."""
+        return self._simulation.config.instruments[instrument].reference_price_ticks
+
+    @property
+    def portfolio(self) -> PortfolioView:
+        """This participant's cash, positions and P&L (read-only)."""
+        return self._portfolio
+
+    @property
+    def activity(self) -> float:
+        """The market's current trading-activity level (1.0 normally; higher when busy).
+        Agents scale how often they act by it."""
+        environment = self._simulation.environment
+        return 1.0 if environment is None else environment.activity
+
+    def mark(self, instrument: int) -> Fraction:
+        """The price positions are valued at, in ticks: the midprice when both sides are
+        quoted, else the last trade, else the reference price."""
+        return self._simulation.mark(instrument)
+
+    def recent_news(self, limit: int = 20) -> list[News]:
+        """The most recently published news items, oldest first."""
+        return self._simulation.recent_news(limit)
+
+    def fundamental_estimate(self, instrument: int) -> float:
+        """A noisy private signal of the instrument's current fundamental value, in ticks:
+        V * exp(noise * Z), with Z drawn from this participant's own stream. Only participants
+        granted a signal (``signal_noise`` is not None) can ask, and only about the present."""
+        noise = self._simulation.participants[self._participant_id].signal_noise
+        if noise is None:
+            raise PermissionError(f"participant {self._participant_id} has no fundamental signal")
+        environment = self._simulation.environment
+        if environment is None:
+            raise SimulationStateError("this simulation has no market environment")
+        value = environment.fundamental(instrument) / self.tick_size(instrument)
+        return value * deterministic_exp(noise * self._rng.normal()) if noise > 0 else value
 
     # ---- Actions (scheduled, never executed re-entrantly) ------------------------------------
     def submit(self, intent: OrderIntent) -> None:
@@ -193,6 +246,18 @@ class SimulationContext:
         return order if order is not None and order.owner == self._participant_id else None
 
 
+class EnvironmentContext(SimulationContext):
+    """The market environment's context: a participant's, plus publishing news."""
+
+    __slots__ = ()
+
+    def publish_news(self, instrument: int, impact: float, headline: str) -> None:
+        if not isinstance(headline, str):
+            raise TypeError("headline must be a str")
+        headline.encode()
+        self._simulation.publish_news(News(self.now, instrument, impact, headline))
+
+
 class Simulation:
     """Deterministic discrete-event simulation of one exchange and its participants.
 
@@ -206,10 +271,14 @@ class Simulation:
         config: SimulationConfig,
         participants: ParticipantFactory | None = None,
         *,
+        environment: Callable[[], MarketEnvironment] | None = None,
         track_changes: bool = False,
     ) -> None:
+        """``environment`` builds the market environment (fresh on every reset). Without one,
+        fundamental values do not exist and nothing exogenous happens."""
         self._config = config
         self._participant_factory: ParticipantFactory = participants or tuple
+        self._environment_factory = environment
         self._track_changes = track_changes
         self._build()
 
@@ -244,25 +313,42 @@ class Simulation:
         self._pending_bars: list[Bar] = []
 
         participants: dict[int, Participant] = {}
-        for participant in self._participant_factory():
+        environment = None if self._environment_factory is None else self._environment_factory()
+        if environment is not None and not isinstance(environment, MarketEnvironment):
+            raise TypeError("environment must build a MarketEnvironment")
+        for participant in (
+            *self._participant_factory(),
+            *(() if environment is None else (environment,)),
+        ):
             if participant.participant_id in participants:
                 raise ValueError(f"duplicate participant id {participant.participant_id}")
             participants[participant.participant_id] = participant
         self._participants = dict(sorted(participants.items()))
-        self._contexts = {
-            pid: SimulationContext(
-                self, pid, DeterministicRng.derive(config.seed, "participant", pid)
+        self._environment = environment
+        ticks = [exact_tick(instrument.tick_size) for instrument in config.instruments]
+        initial_cash = Fraction(Decimal(repr(config.initial_cash)))
+        self._portfolios = {pid: Portfolio(initial_cash, ticks) for pid in self._participants}
+        self._contexts: dict[int, SimulationContext] = {}
+        for pid, participant in self._participants.items():
+            context_type = EnvironmentContext if participant is environment else SimulationContext
+            self._contexts[pid] = context_type(
+                self,
+                pid,
+                DeterministicRng.derive(config.seed, "participant", pid),
+                PortfolioView(self._portfolios[pid]),
             )
-            for pid in self._participants
-        }
+        self._news: deque[News] = deque(maxlen=1_000)
+        self._pending_news: list[News] = []
 
     def start(self) -> None:
         self._require_outside_callbacks("start")
         self._require({SimulationState.CREATED}, "start")
         self._state = SimulationState.RUNNING
         with self._failing_on_error():
-            for pid, participant in self._participants.items():
-                self._callback(_bind_start(participant, self._contexts[pid]))
+            # The environment starts first, so fundamental values exist before anyone asks.
+            order = sorted(self._participants, key=lambda pid: (pid != _environment_id(self), pid))
+            for pid in order:
+                self._callback(_bind_start(self._participants[pid], self._contexts[pid]))
 
     def pause(self) -> None:
         self._require_outside_callbacks("pause")
@@ -427,6 +513,34 @@ class Simulation:
         return MappingProxyType(self._participants)
 
     @property
+    def environment(self) -> MarketEnvironment | None:
+        return self._environment
+
+    def portfolio(self, participant_id: int) -> PortfolioView:
+        """A participant's portfolio, for observers such as the API (read-only)."""
+        return PortfolioView(self._portfolios[participant_id])
+
+    def mark(self, instrument: int) -> Fraction:
+        """Mark price in ticks: the midprice if both sides are quoted, else the last trade,
+        else the reference price."""
+        bid = self._exchange.best_bid(instrument)
+        ask = self._exchange.best_ask(instrument)
+        if bid is not None and ask is not None:
+            return Fraction(bid + ask, 2)
+        last = self._exchange.statistics(instrument).last_price
+        if last is not None:
+            return Fraction(last)
+        return Fraction(self._config.instruments[instrument].reference_price_ticks)
+
+    def marks(self) -> list[Fraction]:
+        return [self.mark(i) for i in range(self._exchange.instrument_count)]
+
+    def recent_news(self, limit: int = 20) -> list[News]:
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        return list(self._news)[max(0, len(self._news) - limit) :]
+
+    @property
     def pending_events(self) -> int:
         return len(self._queue)
 
@@ -459,10 +573,12 @@ class Simulation:
             instruments=frozenset(self._dirty),
             trades=tuple(self._pending_trades),
             bars=tuple(self._pending_bars),
+            news=tuple(self._pending_news),
         )
         self._dirty.clear()
         self._pending_trades.clear()
         self._pending_bars.clear()
+        self._pending_news.clear()
         return changes
 
     # ---- Event processing ----------------------------------------------------------------------
@@ -474,6 +590,8 @@ class Simulation:
             self._execute_order(event.participant_id, event.intent)
         elif isinstance(event, CancelArrival):
             self._execute_cancel(event.participant_id, event.instrument, event.order_id)
+        elif isinstance(event, NewsArrival):
+            self._deliver_news(event.news)
         else:
             participant = self._participants[event.participant_id]
             ctx = self._contexts[event.participant_id]
@@ -527,6 +645,14 @@ class Simulation:
         """Records trades and notifies both sides of every execution and the owners of orders
         removed by self-trade prevention, in exchange sequence order."""
         notifications: list[tuple[int, Callable[[], None]]] = []
+        for trade in result.trades:
+            # Books first, so that every callback sees portfolios that include this trade.
+            self._portfolios[trade.buyer].apply_fill(
+                trade.instrument, Side.BUY, trade.price, trade.quantity
+            )
+            self._portfolios[trade.seller].apply_fill(
+                trade.instrument, Side.SELL, trade.price, trade.quantity
+            )
         for trade in result.trades:
             public = self._recorder.record(trade)
             if self._track_changes:
@@ -624,6 +750,23 @@ class Simulation:
             ctx = self._contexts[participant_id]
             self._callback(lambda: owner.on_cancel(ctx, report))
         return report
+
+    def publish_news(self, news: News) -> None:
+        """Schedules ``news`` to reach every participant at the current time (used by the
+        environment through its context)."""
+        self._queue.push(self._now, NewsArrival(news))
+
+    def _deliver_news(self, news: News) -> None:
+        raw = news.headline.encode()
+        self._digest.update(
+            struct.pack("<BqqdI", _NEWS, self._now, news.instrument, news.impact, len(raw)) + raw
+        )
+        self._news.append(news)
+        if self._track_changes:
+            self._pending_news.append(news)
+        for pid, participant in self._participants.items():
+            if participant is not self._environment:
+                self._callback(_bind_news(participant, self._contexts[pid], news))
 
     def _callback(self, call: Callable[[], None]) -> None:
         self._callback_depth += 1  # A counter, not a flag: callbacks can nest.
@@ -738,6 +881,15 @@ class Simulation:
 
 def _opposite(side: Side) -> Side:
     return Side.SELL if side is Side.BUY else Side.BUY
+
+
+def _environment_id(simulation: Simulation) -> int | None:
+    environment = simulation.environment
+    return None if environment is None else environment.participant_id
+
+
+def _bind_news(participant: Participant, ctx: SimulationContext, news: News) -> Callable[[], None]:
+    return lambda: participant.on_news(ctx, news)
 
 
 def _bind_start(participant: Participant, ctx: SimulationContext) -> Callable[[], None]:

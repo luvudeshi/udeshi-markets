@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from udeshi_markets._engine import CancelReason, OrderStatus, RejectReason, Side
-from udeshi_markets.simulation.events import INT64_MAX, OrderIntent
+from udeshi_markets.simulation.events import INT64_MAX, News, OrderIntent
 
 if TYPE_CHECKING:
     from udeshi_markets.simulation.kernel import SimulationContext
@@ -75,6 +75,10 @@ class Participant:
     never executed re-entrantly.
     """
 
+    signal_noise: float | None = None
+    """Standard deviation (in log terms) of this participant's private signal of fundamental
+    values, through ``ctx.fundamental_estimate``. None: no access to fundamentals at all."""
+
     def __init__(self, participant_id: int, name: str | None = None) -> None:
         if not 0 < participant_id <= INT64_MAX:
             raise ValueError(
@@ -98,6 +102,9 @@ class Participant:
     def on_cancel(self, ctx: SimulationContext, report: CancelReport) -> None:
         """Called when this participant's cancel is processed or its order is removed by
         self-trade prevention."""
+
+    def on_news(self, ctx: SimulationContext, news: News) -> None:
+        """Called when the market environment publishes a news item."""
 
     def on_stop(self, ctx: SimulationContext) -> None:
         """Called once when the simulation stops or completes."""
