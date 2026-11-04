@@ -45,7 +45,8 @@ flowchart TB
     API <-->|REST / WebSocket| FE
 ```
 
-Everything except the benchmarks (Phase 6) exists today.
+Everything shown here exists. How fast each part is, and why, is in
+[benchmarking.md](benchmarking.md).
 
 ## Layering rules
 
@@ -135,7 +136,8 @@ udeshi-markets/
 │   ├── e2e/                            Playwright tests against the real backend
 │   └── Dockerfile                      standalone Next.js server, non-root
 ├── docker-compose.yml                  terminal + API + PostgreSQL
-├── tools/mutation_test.py              mutation testing of the engine test suite
+├── bench/                              engine and simulation benchmarks, recorded results
+├── tools/                              mutation testing, benchmark report generator
 ├── docs/                               design documentation
 └── .github/workflows/
     ├── ci.yml                          engine (Linux + macOS × debug / release / ASan+UBSan),
@@ -145,7 +147,8 @@ udeshi-markets/
     └── mutation.yml                    weekly mutation run on Linux and macOS
 ```
 
-Phase 6 adds `bench/` (benchmarks).
+`bench/` holds the engine benchmark harness (C++), the simulation benchmark (Python) and the
+recorded results.
 
 ## Phase status
 
@@ -156,7 +159,7 @@ Phase 6 adds `bench/` (benchmarks).
 | 3 | Trading agents, market dynamics, portfolio accounting | Done |
 | 4 | Analytics, experiments, Monte Carlo, PostgreSQL | Done |
 | 5 | Frontend, WebSockets, visualisations | Done |
-| 6 | Benchmarks, profiling, optimisation, docs | Planned |
+| 6 | Benchmarks, profiling, optimisation, docs | Done |
 
 ## Further reading
 
@@ -169,4 +172,7 @@ Phase 6 adds `bench/` (benchmarks).
 * [quantitative-metrics.md](quantitative-metrics.md) and
   [market-microstructure.md](market-microstructure.md): every metric's definition.
 * [api.md](api.md): REST endpoints, the WebSocket stream and the error format.
+* [frontend.md](frontend.md): the trading terminal, its data flow and its tests.
+* [benchmarking.md](benchmarking.md): how fast the engine and the simulation are, how that is
+  measured, and what the measurements changed.
 * [development-log.md](development-log.md): what was built in each phase, and why.

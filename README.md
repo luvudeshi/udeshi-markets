@@ -6,15 +6,14 @@ environment for studying the resulting market behaviour.
 
 > Everything is simulated. No real money, brokerage accounts, or real-world order routing.
 
-**Status:** Phases 1 to 5 of 6 are complete:
+**Status:** all six phases are complete:
 - the matching engine;
 - the Python bindings, the discrete-event simulation kernel and the exchange API;
 - autonomous trading agents in a market environment with hidden fundamentals and news;
 - quantitative analytics, and an experiment framework with Monte Carlo runs and PostgreSQL
   persistence;
-- a real-time trading terminal and experiment dashboard (Next.js).
-
-Benchmarks come next; see the [roadmap](docs/architecture.md#phase-status).
+- a real-time trading terminal and experiment dashboard (Next.js);
+- benchmarks, with profiling-driven optimisation.
 
 ## Matching engine (C++20)
 
@@ -126,6 +125,35 @@ Details: [docs/quantitative-metrics.md](docs/quantitative-metrics.md) and
     API.
 
 Details: [docs/frontend.md](docs/frontend.md).
+
+## Performance
+
+Measured, not estimated: one core of an Apple M4, Release build, single instrument. The method
+(workloads recorded against a real engine and replayed exactly), every workload, the Linux
+results from CI, and the profiles behind the optimisations are in
+[docs/benchmarking.md](docs/benchmarking.md).
+
+| Engine workload | Throughput | Mean | p99 | p99.9 |
+| --- | ---: | ---: | ---: | ---: |
+| Mixed flow: adds, cancels, IOC and market orders, about 10k resting orders | 26.9 M ops/s | 37 ns | 167 ns | 250 ns |
+| Same flow through the `Exchange` (plus market data) | 25.0 M ops/s | 40 ns | 167 ns | 250 ns |
+| Add and cancel on a 100k-order book | 29.5 M ops/s | 34 ns | 125 ns | 209 ns |
+| Random cancels on a 1M-order book | 15.6 M ops/s | 64 ns | 292 ns | 458 ns |
+| A market order sweeping 10 levels (100 fills), timed alone | — | 1.6 µs | 1.8 µs | 2.0 µs |
+
+* **Reading the columns.** Means are per operation in a stream. Percentiles time each
+  operation alone, including the clock reads; the Apple clock ticks every 41.7 ns.
+* **Memory.** A resting order occupies 130 bytes of heap (one million orders), with no
+  allocation per order.
+* **Optimisation.** Profiling showed malloc and free first, from a hash-table node per
+  resting order. A flat open-addressing index replaced it, and the trades vector now reserves
+  room once:
+  * mixed flow 14.5 → 26.9 M ops/s;
+  * random cancels on a 1M-order book 3.1 → 15.6 M ops/s;
+  * the worst-case stall 13.6 ms → 11 µs.
+* **The Python simulation.** The default 26-agent market runs at about 87,000 events/s,
+  roughly 1,400 simulated seconds per second. The live analytics the terminal polls now cost
+  0.6 ms per request at any run length; at 2 simulated hours they cost 130 ms before.
 
 ## Quick start
 
@@ -244,6 +272,9 @@ python3 tools/mutation_test.py --jobs 4         # the suite must catch all 67 in
 cd frontend
 npm run lint && npm run typecheck && npm test   # ESLint, tsc (strict), Vitest
 npx playwright test                             # end to end, starts the API and the terminal
+
+build/release/bench/udeshi_bench --json results.json    # engine benchmarks (Release build)
+uv run python bench/simulation_bench.py                 # simulation and live-API benchmarks
 ```
 
 CI runs all of these on Linux (GCC) and macOS (Clang), and builds and smoke-tests the Docker
@@ -264,7 +295,8 @@ flowchart LR
 Details: [architecture](docs/architecture.md) · [matching engine](docs/matching-engine.md) ·
 [simulation kernel](docs/simulation-engine.md) · [trading agents](docs/trading-agents.md) ·
 [metrics](docs/quantitative-metrics.md) · [microstructure](docs/market-microstructure.md) ·
-[API](docs/api.md) · [frontend](docs/frontend.md) · [development log](docs/development-log.md)
+[API](docs/api.md) · [frontend](docs/frontend.md) · [benchmarks](docs/benchmarking.md) ·
+[development log](docs/development-log.md)
 
 ## Repository layout
 
@@ -274,7 +306,8 @@ python/          pybind11 bindings and the udeshi_markets package (simulation ke
                  environment, trading agents, analytics, experiments), tests
 backend/         FastAPI service (udeshi_api), tests, Dockerfile
 frontend/        Next.js trading terminal and experiment dashboard, Vitest and Playwright tests
-tools/           mutation testing
+bench/           engine benchmarks (C++), simulation benchmarks (Python), recorded results
+tools/           mutation testing, benchmark report generator
 docs/            design documentation
 ```
 

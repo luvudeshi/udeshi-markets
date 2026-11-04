@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Turns udeshi_bench's JSON results into the Markdown tables of docs/benchmarking.md.
 
-    tools/bench_report.py RESULTS.json [--baseline BASELINE.json] [--update docs/benchmarking.md]
+    tools/bench_report.py RESULTS.json [--baseline BASELINE.json] [--linux LINUX.json]
+                          [--update docs/benchmarking.md]
 
 Without --update the tables are printed. With it, the text between the markers
 ``<!-- bench:NAME:start -->`` and ``<!-- bench:NAME:end -->`` in the given file is replaced, for
-NAME in environment, memory, workloads and comparison (the last only with --baseline).
+NAME in environment, memory, workloads, mixed, comparison (with --baseline) and linux (with
+--linux: a second machine's results, summarised).
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ import sys
 from typing import Any
 
 Result = dict[str, Any]
+
+DASH = "\u2013"  # An en dash, for ranges.
+TIMES = "\u00d7"  # A multiplication sign, for speed-ups.
 
 GROUP_TITLES = {
     "book_size": "Book size",
@@ -88,7 +93,7 @@ def workloads(results: Result) -> str:
     for group, rows in by_group.items():
         out.append(f"**{GROUP_TITLES.get(group, group)}**\n")
         out.append(
-            "| Workload | Operations | M ops/s (min–max) | Mean ns | p50 | p95 | p99 | p99.9 "
+            f"| Workload | Operations | M ops/s (min{DASH}max) | Mean ns | p50 | p95 | p99 | p99.9 "
             "| Max | Allocations per op |"
         )
         out.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
@@ -102,7 +107,8 @@ def workloads(results: Result) -> str:
             )
             out.append(
                 f"| `{row['name']}` | {row['measured_ops']:,} "
-                f"| {millions(rate['median'])} ({millions(rate['min'])}–{millions(rate['max'])}) "
+                f"| {millions(rate['median'])} "
+                f"({millions(rate['min'])}{DASH}{millions(rate['max'])}) "
                 f"| {nanoseconds(1e9 / rate['median'])} | {latency['p50_ns']} "
                 f"| {latency['p95_ns']} | {latency['p99_ns']} | {latency['p999_ns']} "
                 f"| {latency['max_ns']:,} | {allocations / operations:.2f} |"
@@ -143,9 +149,32 @@ def comparison(results: Result, baseline: Result) -> str:
         new_rate = row["ops_per_second"]["median"]
         lines.append(
             f"| `{row['name']}` | {millions(old_rate)} | {millions(new_rate)} "
-            f"| {new_rate / old_rate:.2f}× | {old['latency']['max_ns']:,} → "
+            f"| {new_rate / old_rate:.2f}{TIMES} | {old['latency']['max_ns']:,} → "
             f"{row['latency']['max_ns']:,} ns | {allocations_per_op(old):.2f} → "
             f"{allocations_per_op(row):.2f} |"
+        )
+    return "\n".join(lines)
+
+
+def summary(results: Result, source: str) -> str:
+    """A second machine: its environment, then throughput and latency per workload."""
+    env = results["environment"]
+    clock = results["clock"]
+    lines = [
+        f"{env['cpu']} ({env['logical_cpus']} logical CPUs), {env['os']}, {env['compiler']}, "
+        f"{env['build']}. Clock resolution {clock['resolution_ns']} ns. Source: {source}.",
+        "",
+        f"| Workload | M ops/s (min{DASH}max) | Mean ns | p50 | p99 | p99.9 | Max |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in results["workloads"]:
+        rate = row["ops_per_second"]
+        latency = row["latency"]
+        lines.append(
+            f"| `{row['name']}` | {millions(rate['median'])} "
+            f"({millions(rate['min'])}{DASH}{millions(rate['max'])}) "
+            f"| {nanoseconds(1e9 / rate['median'])} | {latency['p50_ns']} | {latency['p99_ns']} "
+            f"| {latency['p999_ns']} | {latency['max_ns']:,} |"
         )
     return "\n".join(lines)
 
@@ -158,18 +187,20 @@ def allocations_per_op(workload: Result) -> float:
 
 
 def replace_section(text: str, name: str, body: str) -> str:
+    # The markers may be adjacent (an empty section) or enclose earlier output.
     pattern = re.compile(
-        rf"(<!-- bench:{name}:start -->\n).*?(\n<!-- bench:{name}:end -->)", re.DOTALL
+        rf"(<!-- bench:{name}:start -->\n)(?:.*?\n)?(<!-- bench:{name}:end -->)", re.DOTALL
     )
     if not pattern.search(text):
         raise SystemExit(f"no bench:{name} markers in the document")
-    return pattern.sub(lambda match: match.group(1) + body + match.group(2), text)
+    return pattern.sub(lambda match: match.group(1) + body + "\n" + match.group(2), text)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("results", type=pathlib.Path)
     parser.add_argument("--baseline", type=pathlib.Path)
+    parser.add_argument("--linux", type=pathlib.Path)
     parser.add_argument("--update", type=pathlib.Path)
     args = parser.parse_args()
     results = json.loads(args.results.read_text())
@@ -181,6 +212,10 @@ def main() -> int:
     }
     if args.baseline is not None:
         sections["comparison"] = comparison(results, json.loads(args.baseline.read_text()))
+    if args.linux is not None:
+        sections["linux"] = summary(
+            json.loads(args.linux.read_text()), f"`{args.linux.as_posix()}`, from the CI job"
+        )
     if args.update is None:
         for name, body in sections.items():
             print(f"## {name}\n\n{body}\n")
