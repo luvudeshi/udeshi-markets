@@ -12,7 +12,7 @@ from udeshi_api.settings import MAX_BOOK_DEPTH, Settings
 def test_defaults_are_valid() -> None:
     settings = Settings()
     assert settings.stream_book_depth == 15
-    assert settings.cors_origins == ("http://localhost:3000",)
+    assert settings.cors_origins == ("http://localhost:3000", "http://127.0.0.1:3000")
 
 
 @pytest.mark.parametrize(

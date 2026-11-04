@@ -29,6 +29,7 @@ from starlette.routing import BaseRoute
 from wsclient import receive_snapshot, receive_until
 
 from udeshi_api.main import create_app
+from udeshi_api.manual import MANUAL_TRADER_ID as ME
 from udeshi_api.sessions import LiveSession
 from udeshi_api.settings import Settings
 from udeshi_markets import MAX_ORDER_QUANTITY
@@ -219,12 +220,36 @@ def test_market_book_tape_orders_and_bars_payloads(client: TestClient) -> None:
         "symbol": "ACME",
         "time_seconds": now,
         "bids": [
-            {"price": 0.99, "price_ticks": 99, "quantity": 3, "orders": 1},
-            {"price": 0.97, "price_ticks": 97, "quantity": 2, "orders": 1},
+            {
+                "price": 0.99,
+                "price_ticks": 99,
+                "quantity": 3,
+                "orders": 1,
+                "cumulative_quantity": 3,
+            },
+            {
+                "price": 0.97,
+                "price_ticks": 97,
+                "quantity": 2,
+                "orders": 1,
+                "cumulative_quantity": 5,
+            },
         ],
         "asks": [
-            {"price": 1.02, "price_ticks": 102, "quantity": 3, "orders": 1},
-            {"price": 1.04, "price_ticks": 104, "quantity": 1, "orders": 1},
+            {
+                "price": 1.02,
+                "price_ticks": 102,
+                "quantity": 3,
+                "orders": 1,
+                "cumulative_quantity": 3,
+            },
+            {
+                "price": 1.04,
+                "price_ticks": 104,
+                "quantity": 1,
+                "orders": 1,
+                "cumulative_quantity": 4,
+            },
         ],
         "best_bid": 0.99,
         "best_ask": 1.02,
@@ -233,15 +258,15 @@ def test_market_book_tape_orders_and_bars_payloads(client: TestClient) -> None:
     }
     assert get(client, "/api/markets/ACME/trades") == [
         {"trade_id": 1, "time_seconds": now, "price": 1.0, "price_ticks": 100, "quantity": 1,
-         "aggressor_side": "buy"},
+         "aggressor_side": "buy", "buyer": ME, "seller": ME},
         {"trade_id": 2, "time_seconds": now, "price": 1.03, "price_ticks": 103, "quantity": 1,
-         "aggressor_side": "buy"},
+         "aggressor_side": "buy", "buyer": ME, "seller": ME},
         {"trade_id": 3, "time_seconds": now, "price": 0.98, "price_ticks": 98, "quantity": 1,
-         "aggressor_side": "sell"},
+         "aggressor_side": "sell", "buyer": ME, "seller": ME},
         {"trade_id": 4, "time_seconds": now, "price": 1.01, "price_ticks": 101, "quantity": 1,
-         "aggressor_side": "sell"},
+         "aggressor_side": "sell", "buyer": ME, "seller": ME},
         {"trade_id": 5, "time_seconds": now, "price": 0.99, "price_ticks": 99, "quantity": 2,
-         "aggressor_side": "sell"},
+         "aggressor_side": "sell", "buyer": ME, "seller": ME},
     ]  # fmt: skip
     assert get(client, "/api/markets/ACME/orders") == [
         {"order_id": best_bid["order_id"], "symbol": "ACME", "side": "buy", "price": 0.99,

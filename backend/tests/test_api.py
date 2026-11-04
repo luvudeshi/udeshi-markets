@@ -300,7 +300,10 @@ def test_spec_example_through_the_api(client: TestClient) -> None:
         (1.01, 10, "buy"),
         (1.02, 2, "buy"),
     ]
-    assert not {"buyer", "seller", "buy_order_id"} & set(tape[0])
+    # The observer's tape names both sides (here the API user traded with itself), but never
+    # exposes order ids.
+    assert [(t["buyer"], t["seller"]) for t in tape] == [(1_000_000, 1_000_000)] * 2
+    assert not {"buy_order_id", "sell_order_id"} & set(tape[0])
     (market,) = client.get("/api/markets").json()
     assert (market["last_price"], market["volume"], market["trade_count"]) == (1.02, 12, 2)
     assert market["change"] == pytest.approx(0.02)
@@ -459,7 +462,7 @@ def test_stream_snapshot_then_live_updates(client: TestClient) -> None:
         assert set(market) == {"symbol", "book", "market", "trades", "bars"}
         assert market["symbol"] == "ACME"
         assert market["book"]["bids"] == [
-            {"price": 0.99, "price_ticks": 99, "quantity": 4, "orders": 1}
+            {"price": 0.99, "price_ticks": 99, "quantity": 4, "orders": 1, "cumulative_quantity": 4}
         ]
         order(client, "ACME", side="sell", price=1.01, quantity=3)
         order(client, "ACME", side="buy", price=1.01, quantity=2)
@@ -468,7 +471,13 @@ def test_stream_snapshot_then_live_updates(client: TestClient) -> None:
         assert [(t["price"], t["quantity"]) for t in trades["trades"]] == [(1.01, 2)]
         books = [m for m in received if m["type"] == "book"]
         assert books[-1]["asks"] == [
-            {"price": 1.01, "price_ticks": 101, "quantity": 1, "orders": 1}
+            {
+                "price": 1.01,
+                "price_ticks": 101,
+                "quantity": 1,
+                "orders": 1,
+                "cumulative_quantity": 1,
+            }
         ]
 
 

@@ -181,6 +181,9 @@ class LevelOut(_Model):
     price_ticks: int
     quantity: int
     orders: int
+    cumulative_quantity: int = Field(
+        description="Quantity at this level and every better one on its side (market depth)."
+    )
 
 
 class OrderBookOut(_Model):
@@ -201,6 +204,11 @@ class TradeOut(_Model):
     price_ticks: int
     quantity: int
     aggressor_side: SideName
+    buyer: int | None = Field(
+        description="The buying participant's id: the observer's view, which agents never see "
+        "(their tape is anonymous). None only for a trade too old to be recorded."
+    )
+    seller: int | None = Field(description="The selling participant's id, as for ``buyer``.")
 
 
 class MarketOut(_Model):

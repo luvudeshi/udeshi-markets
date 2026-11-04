@@ -37,7 +37,9 @@ class Settings:
     which bounds its memory and the work of closing bars when simulated time jumps."""
     trade_history_limit: int = 10_000
     """Recent trades kept per instrument for the tape endpoint and stream snapshots."""
-    cors_origins: tuple[str, ...] = field(default=("http://localhost:3000",))
+    cors_origins: tuple[str, ...] = field(
+        default=("http://localhost:3000", "http://127.0.0.1:3000")
+    )
     database_url: str | None = None
     """Where experiment results are kept (a SQLAlchemy URL, e.g. postgresql+psycopg://...).
     None: an in-memory SQLite database, lost when the process exits."""

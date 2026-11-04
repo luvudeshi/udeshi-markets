@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 from fastapi import status
 
+from udeshi_api.counterparties import Counterparties
 from udeshi_api.errors import ApiError, not_found
 from udeshi_api.experiment_schemas import AnalyticsOut
 from udeshi_api.hub import Message, StreamHub
@@ -42,6 +43,7 @@ from udeshi_api.schemas import (
     SimulationOut,
     SimulationSummaryOut,
     StateName,
+    TradeOut,
 )
 from udeshi_api.serialization import (
     PriceFormat,
@@ -68,6 +70,7 @@ from udeshi_markets.simulation import (
     MarketEnvironment,
     OrderIntent,
     Participant,
+    PublicTrade,
     Simulation,
     SimulationConfig,
     SimulationState,
@@ -154,6 +157,7 @@ class LiveSession:
         else:
             self._simulation = Simulation(config, participants, track_changes=True)
         self.formats = [PriceFormat(instrument.tick_size) for instrument in config.instruments]
+        self.counterparties = Counterparties(self._simulation, settings.trade_history_limit)
         self.observer = self._new_observer()
         self.views = ParticipantViews(self._simulation, self.formats, sharpe=self._sharpe)
         self._last_status: Message | None = None
@@ -209,6 +213,15 @@ class LiveSession:
 
     def agents(self) -> list[AgentOut]:
         return self.views.leaderboard()
+
+    def trade(self, trade: PublicTrade) -> TradeOut:
+        """A tape entry with its buyer and seller (the observer's view)."""
+        parties = self.counterparties.of(trade.instrument, trade.trade_id)
+        return trade_out(trade, self.formats[trade.instrument], parties)
+
+    def trades(self, instrument: int, limit: int) -> list[TradeOut]:
+        """The ``limit`` most recent trades, oldest first."""
+        return [self.trade(t) for t in self._simulation.recorder.trades(instrument, limit)]
 
     # ---- Analytics ---------------------------------------------------------------------------
     def _new_observer(self) -> MarketObserver | None:
@@ -453,7 +466,7 @@ class LiveSession:
                         exchange, instrument, fmt, self.fundamental(instrument)
                     ).model_dump(),
                     "trades": [
-                        trade_out(t, fmt).model_dump()
+                        self.trade(t).model_dump()
                         for t in recorder.trades(instrument, SNAPSHOT_TRADES)
                     ],
                     "bars": [
@@ -508,9 +521,8 @@ class LiveSession:
         exchange = self._simulation.exchange
         trades_by_instrument: dict[int, list[Message]] = {}
         for trade in changes.trades:
-            fmt = self.formats[trade.instrument]
             trades_by_instrument.setdefault(trade.instrument, []).append(
-                trade_out(trade, fmt).model_dump()
+                self.trade(trade).model_dump()
             )
         bars_by_instrument: dict[int, list[Bar]] = {}
         for bar in changes.bars:

@@ -47,7 +47,9 @@ def side_name(side: Side) -> str:
     return "buy" if side is Side.BUY else "sell"
 
 
-def trade_out(trade: PublicTrade, fmt: PriceFormat) -> TradeOut:
+def trade_out(trade: PublicTrade, fmt: PriceFormat, parties: tuple[int, int] | None) -> TradeOut:
+    """``parties`` is ``(buyer, seller)`` from the observer's ledger (see counterparties.py)."""
+    buyer, seller = (None, None) if parties is None else parties
     return TradeOut(
         trade_id=trade.trade_id,
         time_seconds=to_seconds(trade.time),
@@ -55,6 +57,8 @@ def trade_out(trade: PublicTrade, fmt: PriceFormat) -> TradeOut:
         price_ticks=trade.price,
         quantity=trade.quantity,
         aggressor_side="buy" if trade.aggressor_side is Side.BUY else "sell",
+        buyer=buyer,
+        seller=seller,
     )
 
 
@@ -133,15 +137,20 @@ def book_out(
     snapshot = exchange.book_snapshot(instrument, depth)
 
     def levels(side: Sequence[LevelView]) -> list[LevelOut]:
-        return [
-            LevelOut(
-                price=fmt.price(level.price),
-                price_ticks=level.price,
-                quantity=level.quantity,
-                orders=level.order_count,
+        out = []
+        cumulative = 0
+        for level in side:  # Best first.
+            cumulative += level.quantity
+            out.append(
+                LevelOut(
+                    price=fmt.price(level.price),
+                    price_ticks=level.price,
+                    quantity=level.quantity,
+                    orders=level.order_count,
+                    cumulative_quantity=cumulative,
+                )
             )
-            for level in side
-        ]
+        return out
 
     return OrderBookOut(
         symbol=exchange.instrument(instrument).symbol,

@@ -24,7 +24,6 @@ from udeshi_api.serialization import (
     market_detail_out,
     market_out,
     recent_bars,
-    trade_out,
 )
 from udeshi_api.settings import MAX_BOOK_DEPTH
 
@@ -81,11 +80,10 @@ async def get_trades(
     limit: Annotated[int, Query(ge=1, le=1_000)] = 50,
     simulation_id: SimulationId = None,
 ) -> list[TradeOut]:
-    """The public tape, oldest first. Trades carry no order ids or trader identities."""
+    """The tape, oldest first, with each trade's buyer and seller: the observer's view (agents
+    see an anonymous tape). No order ids."""
     session = sessions.resolve(simulation_id)
-    instrument = session.instrument(symbol)
-    fmt = session.formats[instrument]
-    return [trade_out(t, fmt) for t in session.simulation.recorder.trades(instrument, limit)]
+    return session.trades(session.instrument(symbol), limit)
 
 
 @router.get("/{symbol}/history")
