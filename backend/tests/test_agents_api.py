@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pytest
@@ -296,6 +297,9 @@ def test_news_is_published_and_listed(client: TestClient) -> None:
         assert item["symbol"] in SYMBOLS
         assert item["sentiment"] == ("positive" if item["impact"] > 0 else "negative")
         assert item["headline"].startswith(item["symbol"])
+        # The percent change of the fundamental, not the log impact relabelled as a percent.
+        expected = math.expm1(item["impact"]) * 100
+        assert item["change_percent"] == pytest.approx(expected, abs=1e-5)
     assert get(client, "/api/news", limit=5) == news[-5:]
     assert client.get("/api/news", params={"limit": 0}).status_code == 422
 
@@ -324,7 +328,15 @@ def test_news_is_streamed(client: TestClient) -> None:
         receive_snapshot(ws)
         action(client, simulation_id, "step", events=2_000)
         item = receive_until(ws, "news")[-1]
-    assert set(item) == {"type", "time_seconds", "symbol", "impact", "sentiment", "headline"}
+    assert set(item) == {
+        "type",
+        "time_seconds",
+        "symbol",
+        "impact",
+        "change_percent",
+        "sentiment",
+        "headline",
+    }
     assert item == {"type": "news", **get(client, "/api/news", limit=1_000)[0]}
 
 

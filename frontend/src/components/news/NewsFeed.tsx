@@ -1,7 +1,7 @@
 "use client";
 
 import { Empty, Panel } from "@/components/ui/Panel";
-import { fmtSigned, fmtSimTime } from "@/lib/format";
+import { fmtPercent, fmtSigned, fmtSimTime } from "@/lib/format";
 import { useTerminal } from "@/lib/stream/store";
 import type { NewsOut } from "@/lib/types";
 
@@ -13,8 +13,8 @@ const SENTIMENT: Record<NewsOut["sentiment"], { mark: string; className: string;
   };
 
 /**
- * Published news, newest first. The impact is the change the news made to the instrument's
- * log fundamental value (unannounced shocks never appear here).
+ * Published news, newest first, with the change each item made to the instrument's fundamental
+ * value, as the backend reports it (unannounced shocks never appear here).
  */
 export function NewsFeed({ className = "" }: { className?: string }) {
   const news = useTerminal((state) => state.news);
@@ -65,9 +65,9 @@ export function NewsFeed({ className = "" }: { className?: string }) {
                   </span>
                   <span
                     className={`num ml-auto ${sentiment.className}`}
-                    title="Change in the log fundamental value"
+                    title={`Change in the fundamental value (log impact ${fmtSigned(item.impact, 4)})`}
                   >
-                    {fmtSigned(item.impact * 100, 2)}%
+                    {fmtPercent(item.change_percent)}
                   </span>
                 </div>
                 <p

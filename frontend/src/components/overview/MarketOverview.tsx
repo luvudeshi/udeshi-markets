@@ -14,7 +14,7 @@ import {
   fmtPercent,
   signClass,
 } from "@/lib/format";
-import { usePoll } from "@/lib/hooks";
+import { useMoment, usePoll } from "@/lib/hooks";
 import { useTerminal } from "@/lib/stream/store";
 import type { AnalyticsOut, MarketOut } from "@/lib/types";
 
@@ -38,26 +38,22 @@ export function MarketOverview({ className = "" }: { className?: string }) {
   const agents = useTerminal((state) => state.agents);
   const selected = useTerminal((state) => state.selectedSymbol);
   const selectSymbol = useTerminal((state) => state.selectSymbol);
-  const snapshots = useTerminal((state) => state.snapshots);
-  // While running, poll on a timer; otherwise fetch again only when the clock moves (a step).
-  const moment = useTerminal((state) =>
-    state.status?.state === "running" ? "live" : String(state.status?.time_seconds ?? 0),
-  );
+  // While running, poll on a timer; otherwise fetch again when something happened.
+  const moment = useMoment();
   const running = moment === "live";
-  const refresh = `${snapshots}:${moment}`;
   // Analytics exist only for markets with an environment (it is listed as a participant).
   const hasMarket = agents.some((agent) => agent.strategy === "environment");
   const analytics = usePoll<AnalyticsOut>(
     hasMarket ? simulationId : null,
     () => api.analytics(simulationId ?? ""),
     running ? ANALYTICS_MS : null,
-    refresh,
+    moment,
   );
   const simulation = usePoll(
     simulationId,
     () => api.getSimulation(simulationId ?? ""),
     running ? SUMMARY_MS : null,
-    refresh,
+    moment,
   );
 
   const volatility = useMemo(() => {
@@ -192,6 +188,15 @@ export function MarketOverview({ className = "" }: { className?: string }) {
           role="status"
         >
           Analytics unavailable: {analyticsFailure}
+        </p>
+      )}
+      {simulation.error !== null && (
+        <p
+          className="shrink-0 border-t border-line px-2.5 py-1 text-[10.5px] text-ask"
+          role="status"
+          data-testid="totals-error"
+        >
+          Totals unavailable: {simulation.error.message}
         </p>
       )}
     </Panel>

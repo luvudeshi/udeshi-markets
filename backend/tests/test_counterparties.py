@@ -8,9 +8,11 @@ import pytest
 from apiclient import FROZEN, action, create, get
 from fastapi.testclient import TestClient
 from test_agents_api import SMALL, session_of
-from wsclient import receive_snapshot
+from wsclient import receive_snapshot, receive_until
 
 from udeshi_api.counterparties import Counterparties
+from udeshi_api.main import create_app
+from udeshi_api.settings import Settings
 from udeshi_markets import Side
 from udeshi_markets.simulation import (
     InstrumentConfig,
@@ -62,6 +64,31 @@ def test_streamed_trades_name_their_counterparties(client: TestClient) -> None:
     trades = [trade for market in snapshot["markets"] for trade in market["trades"]]
     assert trades
     assert all(t["buyer"] in ids and t["seller"] in ids for t in trades)
+
+
+def test_a_big_step_streams_only_trades_whose_counterparties_are_known() -> None:
+    """One step can trade more than the tape (and the ledger) keeps. The stream sends the
+    newest trades, all with buyer and seller, and counts the rest as omitted."""
+    limit = 20
+    settings = Settings(tick_seconds=0.01, trade_history_limit=limit)
+    with TestClient(create_app(settings)) as client:
+        simulation_id = create(client, agents=SMALL, speed=FROZEN, seed=6)["id"]
+        action(client, simulation_id, "start")
+        action(client, simulation_id, "pause")
+        with client.websocket_connect(
+            f"/api/simulations/{simulation_id}/stream?symbols=ACME"
+        ) as ws:
+            receive_snapshot(ws)
+            before = get(client, "/api/markets/ACME")["trade_count"]
+            action(client, simulation_id, "step", events=12_000)
+            traded = get(client, "/api/markets/ACME")["trade_count"] - before
+            message = receive_until(ws, "trades")[-1]
+    assert traded > limit  # The case this test is about.
+    assert len(message["trades"]) == limit
+    assert message["omitted"] == traded - limit
+    assert all(t["buyer"] is not None and t["seller"] is not None for t in message["trades"])
+    tape = [t["trade_id"] for t in message["trades"]]
+    assert tape == sorted(tape)  # The newest, oldest first, as on the tape.
 
 
 def test_a_reset_forgets_the_previous_runs_counterparties(client: TestClient) -> None:

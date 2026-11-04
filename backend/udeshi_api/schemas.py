@@ -374,5 +374,9 @@ class NewsOut(_Model):
     time_seconds: float
     symbol: str
     impact: float = Field(description="Change in the log fundamental value.")
+    change_percent: float = Field(
+        description="The same change as a percentage of the fundamental value: "
+        "(exp(impact) - 1) * 100."
+    )
     sentiment: Literal["positive", "negative", "neutral"]
     headline: str

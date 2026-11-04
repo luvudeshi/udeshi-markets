@@ -20,6 +20,7 @@ from udeshi_markets.simulation import (
     EventQueue,
     Fill,
     InstrumentConfig,
+    OrderEvent,
     OrderIntent,
     OrderReport,
     Participant,
@@ -30,6 +31,7 @@ from udeshi_markets.simulation import (
     Simulation,
     SimulationConfig,
     SimulationContext,
+    SimulationObserver,
     SimulationState,
     SimulationStateError,
     deterministic_log,
@@ -275,6 +277,37 @@ def test_a_failing_callback_ends_the_run_in_failed() -> None:
     simulation.reset()
     assert state_of(simulation) is SimulationState.CREATED
     assert simulation.failure is None
+
+
+def test_observers_see_an_order_whose_fill_callback_failed() -> None:
+    """The order's trades are on the tape even though the run failed, so observers (the
+    analytics, the API's counterparty ledger) must have been told about them too."""
+
+    class Taker(Exploder):
+        def on_start(self, ctx: SimulationContext) -> None:
+            ctx.wakeup(3 * SECOND)
+
+        def on_wakeup(self, ctx: SimulationContext, tag: str) -> None:
+            ctx.submit(buy(100, 1))
+
+    class Recorder(SimulationObserver):
+        def __init__(self) -> None:
+            self.trades: list[tuple[int, int]] = []
+
+        def on_order(self, event: OrderEvent) -> None:
+            self.trades += [(trade.buyer, trade.seller) for trade in event.result.trades]
+
+    simulation = Simulation(
+        config(),
+        lambda: [ScriptedParticipant(1, [ScriptedOrder(SECOND, sell(100, 2))]), Taker(2)],
+    )
+    observer = Recorder()
+    simulation.add_observer(observer)
+    with pytest.raises(RuntimeError, match="strategy bug"):
+        simulation.run()
+    assert state_of(simulation) is SimulationState.FAILED
+    assert len(simulation.recorder.trades(0)) == 1
+    assert observer.trades == [(2, 1)]
 
 
 def test_a_failure_in_on_start_also_fails_the_run() -> None:

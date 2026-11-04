@@ -6,34 +6,43 @@ import { useApi } from "@/lib/api-context";
 import { StreamConnection } from "@/lib/stream/connection";
 import { useTerminal } from "@/lib/stream/store";
 
+const RETRY_MS = 3_000;
+
 /**
  * Keeps the store connected to the selected simulation's stream. On first load it selects the
- * server's active simulation (the most recently created), if there is one.
+ * server's active simulation (the most recently created), if there is one, retrying until the
+ * API answers.
  */
 export function TerminalStream() {
   const api = useApi();
   const simulationId = useTerminal((state) => state.simulationId);
 
   useEffect(() => {
-    if (useTerminal.getState().simulationId !== null) return;
     let cancelled = false;
-    api
-      .listSimulations()
-      .then((simulations) => {
-        const active = simulations.find((simulation) => simulation.active);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = async () => {
+      if (useTerminal.getState().simulationId !== null) return;
+      try {
+        const simulations = await api.listSimulations();
+        if (cancelled) return;
         const store = useTerminal.getState();
-        if (!cancelled && active !== undefined && store.simulationId === null) {
-          store.setSimulation(active.id);
+        // The API answers (again): whatever said it was unreachable no longer applies.
+        if (store.connection === "closed" && store.simulationId === null) {
+          store.setConnection("idle", null);
         }
-      })
-      .catch((error: unknown) => {
+        const active = simulations.find((simulation) => simulation.active);
+        if (active !== undefined && store.simulationId === null) store.setSimulation(active.id);
+      } catch (error) {
+        if (cancelled) return;
         console.error("could not list simulations", error);
-        if (!cancelled) {
-          useTerminal.getState().setConnection("closed", `API unreachable at ${api.baseUrl}`);
-        }
-      });
+        useTerminal.getState().setConnection("closed", `API unreachable at ${api.baseUrl}`);
+        timer = setTimeout(attempt, RETRY_MS); // Until it answers.
+      }
+    };
+    void attempt();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [api]);
 

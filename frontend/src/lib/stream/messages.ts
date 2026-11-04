@@ -39,7 +39,13 @@ export type SnapshotMessage = {
 export type SimulationMessage = { type: "simulation" } & SimulationStatus;
 export type BookMessage = { type: "book" } & OrderBookOut;
 export type MarketMessage = { type: "market" } & MarketOut;
-export type TradesMessage = { type: "trades"; symbol: string; trades: TradeOut[] };
+/** At most the newest trades the tape keeps; ``omitted`` counts the batch's older ones. */
+export type TradesMessage = {
+  type: "trades";
+  symbol: string;
+  trades: TradeOut[];
+  omitted: number;
+};
 export type BarsMessage = { type: "bars"; symbol: string; bars: BarOut[]; omitted: number };
 export type NewsMessage = { type: "news" } & NewsOut;
 export type AgentsMessage = { type: "agents"; agents: AgentOut[] };

@@ -85,7 +85,11 @@ function SimulationPicker({
   const version = useControls((store) => store.listVersion);
   const [confirming, setConfirming] = useState(false);
   const [busy, run] = useAction();
-  const { data: simulations, refresh } = usePoll(
+  const {
+    data: simulations,
+    error: listError,
+    refresh,
+  } = usePoll(
     "simulations",
     () => api.listSimulations(),
     null,
@@ -119,7 +123,10 @@ function SimulationPicker({
           value={simulationId ?? ""}
           onFocus={refresh}
           onChange={(event) => useTerminal.getState().setSimulation(event.target.value || null)}
-          className="h-6 text-[11px]"
+          className={`h-6 text-[11px] ${listError === null ? "" : "border-ask/70"}`}
+          title={
+            listError === null ? undefined : `Could not refresh the list: ${listError.message}`
+          }
         >
           {simulationId === null && <option value="">No simulation</option>}
           {simulationId !== null && !listed && <option value={simulationId}>{simulationId}</option>}
@@ -161,7 +168,15 @@ function StateBadge({ state }: { state: SimulationState }) {
   );
 }
 
-function Clock({ status, duration }: { status: SimulationStatus; duration: number | undefined }) {
+function Clock({
+  status,
+  duration,
+  durationError,
+}: {
+  status: SimulationStatus;
+  duration: number | undefined;
+  durationError: Error | null;
+}) {
   const progress = Math.min(1, Math.max(0, status.progress));
   return (
     <div
@@ -172,8 +187,14 @@ function Clock({ status, duration }: { status: SimulationStatus; duration: numbe
         <span data-testid="sim-clock" className="text-text">
           {fmtSimTime(status.time_seconds)}
         </span>
-        <span data-testid="sim-duration" className="hidden text-faint xl:inline">
-          / {duration === undefined ? "—" : fmtSimTime(duration)}
+        <span
+          data-testid="sim-duration"
+          className={`hidden xl:inline ${durationError === null ? "text-faint" : "text-ask"}`}
+          title={
+            durationError === null ? undefined : `Duration unavailable: ${durationError.message}`
+          }
+        >
+          / {duration === undefined ? (durationError === null ? "—" : "?") : fmtSimTime(duration)}
         </span>
       </div>
       <div
@@ -237,7 +258,7 @@ export function SimulationControls() {
   // A status from another simulation can linger until the new stream's snapshot arrives.
   const status = stored !== null && stored.id === simulationId ? stored : null;
   const [busy, run] = useAction();
-  const { data: details } = usePoll(
+  const { data: details, error: detailsError } = usePoll(
     simulationId === null ? null : `simulation:${simulationId}`,
     () =>
       simulationId === null
@@ -267,7 +288,11 @@ export function SimulationControls() {
               Runner failed: {status.error}
             </span>
           )}
-          <Clock status={status} duration={details?.duration_seconds} />
+          <Clock
+            status={status}
+            duration={details?.duration_seconds}
+            durationError={detailsError}
+          />
           <div className="flex items-center gap-1">
             {ACTIONS[status.state].map((action) => (
               <Button

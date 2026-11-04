@@ -6,7 +6,7 @@ import { Button, Field, Segmented, TextInput } from "@/components/ui/controls";
 import { Empty } from "@/components/ui/Panel";
 import { useApi } from "@/lib/api-context";
 import { decimalsOf, fmtNumber } from "@/lib/format";
-import { useIsRunning, usePoll } from "@/lib/hooks";
+import { useIsRunning, useMoment, usePoll } from "@/lib/hooks";
 import type { MarketState } from "@/lib/stream/reducer";
 import { useSelectedMarket, useTerminal } from "@/lib/stream/store";
 import type { OrderIn, OrderOut } from "@/lib/types";
@@ -188,8 +188,7 @@ export function OrderTicket() {
   const api = useApi();
   const simulationId = useTerminal((state) => state.simulationId);
   const symbol = useTerminal((state) => state.selectedSymbol);
-  // A new snapshot (after a reset, say) can invalidate every order: fetch them again.
-  const snapshots = useTerminal((state) => state.snapshots);
+  const moment = useMoment();
   const selected = useSelectedMarket();
   const running = useIsRunning();
   const key = simulationId === null || symbol === null ? null : `${simulationId}/${symbol}`;
@@ -200,7 +199,8 @@ export function OrderTicket() {
         ? Promise.resolve([])
         : api.myOrders(simulationId, symbol),
     running ? 1_000 : null,
-    snapshots,
+    // While paused, fills arrive with steps: fetch again whenever something happened.
+    moment,
   );
 
   if (simulationId === null || selected === undefined) {

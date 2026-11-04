@@ -218,13 +218,23 @@ jobs:
             "import json,sys; m=json.load(sys.stdin); assert len(m)==5, m; print('markets ok')"
           docker inspect --format '{{.Config.User}}' api | grep -qx app
       - name: Smoke test the terminal
+        # A distinctive API address checks that UDESHI_API_URL is read when the server
+        # starts, not baked in at build time; fetching a script and a stylesheet checks that
+        # the image serves its static assets (the HTML alone renders without them).
         run: |
-          docker run -d --name web -p 3000:3000 -e UDESHI_API_URL=http://127.0.0.1:8000 udeshi-web:ci
+          docker run -d --name web -p 3000:3000 -e UDESHI_API_URL=http://api.ci.invalid:8000 udeshi-web:ci
           for i in $(seq 1 30); do
             curl -fsS -o /dev/null http://127.0.0.1:3000/ && break
             sleep 1
           done
-          curl -fsS http://127.0.0.1:3000/ | grep -q "Udeshi Markets"
+          page=$(curl -fsS http://127.0.0.1:3000/)
+          echo "$page" | grep -q "Udeshi Markets"
+          echo "$page" | grep -q "http://api.ci.invalid:8000"
+          script=$(echo "$page" | grep -o '/_next/static/[^"\\]*\.js' | head -1)
+          style=$(echo "$page" | grep -o '/_next/static/[^"\\]*\.css' | head -1)
+          test -n "$script" && test -n "$style"
+          curl -fsS -o /dev/null "http://127.0.0.1:3000$script"
+          curl -fsS -o /dev/null "http://127.0.0.1:3000$style"
           curl -fsS http://127.0.0.1:3000/experiments | grep -q "Experiments"
           docker inspect --format '{{.Config.User}}' web | grep -qx app
       - name: Container logs

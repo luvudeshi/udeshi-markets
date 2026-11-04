@@ -9,10 +9,13 @@ import json
 import sys
 
 from udeshi_api.main import create_app
+from udeshi_api.settings import Settings
 
 
 def main() -> None:
-    json.dump(create_app().openapi(), sys.stdout, indent=2, sort_keys=True)
+    # Default settings, not the environment's: the schema does not depend on them, and a
+    # configured database (perhaps unreachable from here) must not be touched.
+    json.dump(create_app(Settings()).openapi(), sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
 
 

@@ -2142,6 +2142,11 @@
       "NewsOut": {
         "additionalProperties": false,
         "properties": {
+          "change_percent": {
+            "description": "The same change as a percentage of the fundamental value: (exp(impact) - 1) * 100.",
+            "title": "Change Percent",
+            "type": "number"
+          },
           "headline": {
             "title": "Headline",
             "type": "string"
@@ -2173,6 +2178,7 @@
           "time_seconds",
           "symbol",
           "impact",
+          "change_percent",
           "sentiment",
           "headline"
         ],

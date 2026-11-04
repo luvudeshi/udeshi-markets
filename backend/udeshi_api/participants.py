@@ -9,6 +9,7 @@ reference price.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Callable, Iterable, Sequence
 from fractions import Fraction
 from typing import Literal
@@ -83,6 +84,7 @@ def news_out(news: News, symbols: Sequence[str]) -> NewsOut:
         time_seconds=to_seconds(news.time),
         symbol=symbols[news.instrument],
         impact=round(news.impact, 8),
+        change_percent=round(math.expm1(news.impact) * 100.0, 6),
         sentiment=_SENTIMENTS[news.sentiment],
         headline=news.headline,
     )

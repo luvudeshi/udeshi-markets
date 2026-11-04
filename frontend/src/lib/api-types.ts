@@ -1318,6 +1318,11 @@ export interface components {
         };
         /** NewsOut */
         NewsOut: {
+            /**
+             * Change Percent
+             * @description The same change as a percentage of the fundamental value: (exp(impact) - 1) * 100.
+             */
+            change_percent: number;
             /** Headline */
             headline: string;
             /**

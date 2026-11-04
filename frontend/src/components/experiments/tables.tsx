@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 
 import { Empty } from "@/components/ui/Panel";
 import type { ExperimentPointOut } from "@/lib/types";
@@ -9,6 +9,14 @@ import { fmtMetric, metricLabel, pointName } from "./format";
 
 const TH = "label-caps sticky top-0 z-10 bg-panel px-2 py-1 text-right font-medium first:text-left";
 const TD = "num px-2 py-[3px] text-right whitespace-nowrap";
+
+/** Rows that select something answer Enter and Space too, like buttons. */
+function activate(event: KeyboardEvent, select: () => void) {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    select();
+  }
+}
 
 export function Th({ children, title }: { children: ReactNode; title?: string }) {
   return (
@@ -61,7 +69,9 @@ export function PointsTable({
               data-testid="points-row"
               data-point={point.point}
               aria-selected={selected}
+              tabIndex={0}
               onClick={() => onSelectPoint(point.point)}
+              onKeyDown={(event) => activate(event, () => onSelectPoint(point.point))}
               className={`cursor-pointer border-b border-line/60 ${
                 selected ? "bg-raised text-text" : "hover:bg-hover"
               }`}
@@ -124,7 +134,9 @@ export function SummaryTable({
               data-testid="summary-row"
               data-metric={summary.metric}
               aria-selected={selected}
+              tabIndex={0}
               onClick={() => onSelectMetric(summary.metric)}
+              onKeyDown={(event) => activate(event, () => onSelectMetric(summary.metric))}
               className={`cursor-pointer border-b border-line/60 ${
                 selected ? "bg-raised text-text" : "hover:bg-hover"
               }`}

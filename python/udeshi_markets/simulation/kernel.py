@@ -722,11 +722,17 @@ class Simulation:
             resting_quantity=result.resting_quantity,
             cancelled_quantity=result.cancelled_quantity,
         )
-        self._notify_executions(result, intent)
-        if self._observers:
-            event = OrderEvent(self._now, participant_id, intent, result, bid_before, ask_before)
-            for observer in self._observers:
-                observer.on_order(event)
+        try:
+            self._notify_executions(result, intent)
+        finally:
+            # Also when a participant's callback raised and the run is about to fail: the
+            # trades are on the tape already, and observers must account for every one.
+            if self._observers:
+                event = OrderEvent(
+                    self._now, participant_id, intent, result, bid_before, ask_before
+                )
+                for observer in self._observers:
+                    observer.on_order(event)
         owner = self._participants.get(participant_id)
         if owner is not None:
             ctx = self._contexts[participant_id]

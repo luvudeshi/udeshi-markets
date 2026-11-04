@@ -73,6 +73,7 @@ const news: NewsOut = {
   time_seconds: 3,
   symbol: "ACME",
   impact: 0.01,
+  change_percent: 1.005017,
   sentiment: "positive",
   headline: "ACME beats expectations",
 };
@@ -120,7 +121,7 @@ describe("reduce", () => {
 
     // A later snapshot (after a reset, or a resync) drops what came before it.
     const after = reduceAll(state, [
-      { type: "trades", symbol: "ACME", trades: [trade(2)] },
+      { type: "trades", symbol: "ACME", trades: [trade(2)], omitted: 0 },
       snapshot({ markets: [] }),
     ]);
     expect(after.symbols).toEqual([]);
@@ -133,7 +134,7 @@ describe("reduce", () => {
     const messages: StreamMessage[] = [
       { type: "book", ...book("ACME", 98) },
       { type: "market", ...market("ACME", 99.5) },
-      { type: "trades", symbol: "ACME", trades: [trade(2), trade(3)] },
+      { type: "trades", symbol: "ACME", trades: [trade(2), trade(3)], omitted: 0 },
       { type: "bars", symbol: "ACME", bars: [bar(1), bar(2)], omitted: 4 },
     ];
     const state = reduceAll(start, messages);
@@ -150,13 +151,15 @@ describe("reduce", () => {
   it("ignores updates for symbols the snapshot did not include", () => {
     const start = reduce(EMPTY_STREAM, snapshot());
     expect(reduce(start, { type: "book", ...book("ZZZ", 1) })).toBe(start);
-    expect(reduce(start, { type: "trades", symbol: "ZZZ", trades: [trade(9)] })).toBe(start);
+    expect(reduce(start, { type: "trades", symbol: "ZZZ", trades: [trade(9)], omitted: 0 })).toBe(
+      start,
+    );
   });
 
   it("keeps only the most recent trades and news", () => {
     const start = reduce(EMPTY_STREAM, snapshot());
     const many = Array.from({ length: TRADES_KEPT + 50 }, (_, i) => trade(i + 2));
-    const state = reduce(start, { type: "trades", symbol: "ACME", trades: many });
+    const state = reduce(start, { type: "trades", symbol: "ACME", trades: many, omitted: 0 });
     const ids = state.markets.ACME?.trades.map((t) => t.trade_id) ?? [];
     expect(ids).toHaveLength(TRADES_KEPT);
     expect(ids.at(-1)).toBe(TRADES_KEPT + 51);

@@ -18,7 +18,7 @@ import {
   participantTag,
   signClass,
 } from "@/lib/format";
-import { usePoll } from "@/lib/hooks";
+import { useMoment, usePoll } from "@/lib/hooks";
 import { useTerminal } from "@/lib/stream/store";
 import type { AgentDetailOut } from "@/lib/types";
 
@@ -86,12 +86,8 @@ export function AgentDrawer({
   onClose: () => void;
 }) {
   const api = useApi();
-  // While running, poll on a timer; otherwise fetch again only when the clock moves (a step).
-  // Selected as one value so that a running clock does not re-render the sheet every tick.
-  const moment = useTerminal((state) =>
-    state.status?.state === "running" ? "live" : String(state.status?.time_seconds ?? 0),
-  );
-  const snapshots = useTerminal((state) => state.snapshots);
+  // While running, poll on a timer; otherwise fetch again when something happened.
+  const moment = useMoment();
   const tickSizes = useTerminal(
     useShallow((state) =>
       Object.fromEntries(
@@ -105,7 +101,7 @@ export function AgentDrawer({
     `${simulationId}:${agentId}`,
     () => api.agent(simulationId, agentId),
     moment === "live" ? DETAIL_MS : null,
-    `${snapshots}:${moment}`,
+    moment,
   );
 
   const close = useEffectEvent(onClose);

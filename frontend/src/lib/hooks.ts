@@ -17,7 +17,7 @@ export interface Polled<T> {
  * down or stops once nothing more will change), or null for no polling. */
 export type PollInterval<T> = number | null | ((data: T) => number | null);
 
-/** How long a poll that adapts to its data waits after a failure before trying again. */
+/** How long a fetch waits after a failure before trying again, unless it polls faster. */
 const RETRY_MS = 5_000;
 
 /**
@@ -27,6 +27,9 @@ const RETRY_MS = 5_000;
  * - A new ``version`` fetches at once but keeps showing the current result until the new one
  *   arrives: the same thing, changed (a step, a reset, a new list entry), so nothing blinks.
  * - A response that arrives after the key or version changed is discarded.
+ * - A failure is reported to the console and retried (at the polling interval, or after
+ *   RETRY_MS for a fetch that does not poll): one dropped request must not leave a panel
+ *   empty until the page is reloaded.
  */
 export function usePoll<T>(
   key: string | null,
@@ -43,7 +46,7 @@ export function usePoll<T>(
   const delayAfter = useEffectEvent((data: T) =>
     typeof interval === "function" ? interval(data) : interval,
   );
-  const retryAfter = typeof interval === "function" ? RETRY_MS : interval;
+  const retryAfter = typeof interval === "number" ? Math.min(interval, RETRY_MS) : RETRY_MS;
 
   useEffect(() => {
     if (key === null) return;
@@ -59,6 +62,7 @@ export function usePoll<T>(
       } catch (caught) {
         if (cancelled) return;
         const error = caught instanceof Error ? caught : new Error(String(caught));
+        console.error(`request ${key} failed`, error);
         setState((previous) => ({
           key,
           data: previous.key === key ? previous.data : undefined,
@@ -78,6 +82,23 @@ export function usePoll<T>(
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
   const current = state.key === key;
   return { data: current ? state.data : undefined, error: current ? state.error : null, refresh };
+}
+
+/**
+ * "live" while the selected simulation runs (panels then poll on a timer). Otherwise a value
+ * that changes whenever what the REST endpoints report can have changed: the simulated time
+ * moved (a step), or a trade happened without it moving (a manual order while paused). Use it
+ * as a usePoll version. Selected as one string, so a running clock causes no re-render.
+ */
+export function useMoment(): string {
+  return useTerminal((state) => {
+    if (state.status?.state === "running") return "live";
+    let newest = 0; // Trade ids are exchange-wide and increasing.
+    for (const symbol of state.symbols) {
+      newest = Math.max(newest, state.markets[symbol]?.trades.at(-1)?.trade_id ?? 0);
+    }
+    return `${state.snapshots}:${state.status?.time_seconds ?? 0}:${newest}`;
+  });
 }
 
 /** True while the selected simulation's clock is moving. */

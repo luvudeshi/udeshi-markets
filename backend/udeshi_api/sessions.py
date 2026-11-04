@@ -86,6 +86,9 @@ SNAPSHOT_BARS = 100
 """Most recent closed bars per symbol in a stream snapshot."""
 STREAM_BAR_LIMIT = 1_000
 """Most bars per symbol in one ``bars`` update; earlier ones are counted in ``omitted``."""
+STREAM_TRADE_LIMIT = 1_000
+"""Most trades per symbol in one ``trades`` update (and never more than the tape keeps);
+earlier ones are counted in ``omitted``."""
 SNAPSHOT_NEWS = 20
 """Most recent news items in a stream snapshot."""
 LEADERBOARD_SECONDS = 1.0
@@ -164,6 +167,9 @@ class LiveSession:
         self.clock: Callable[[], float] = time.monotonic  # Paces leaderboard messages.
         self._leaderboard_at: float | None = None
         self._last_leaderboard: list[Message] | None = None
+        # A batch can hold more trades than the tape (and the counterparty ledger) keeps; only
+        # the ones still recorded are streamed, so every streamed trade names both sides.
+        self._stream_trades = min(STREAM_TRADE_LIMIT, settings.trade_history_limit)
         self.hub = StreamHub(settings.stream_queue_size, self.snapshot_message)
         self.runner = LiveRunner(
             self,
@@ -519,11 +525,9 @@ class LiveSession:
     def _updates(self, changes: ChangeSet) -> list[tuple[Message, str]]:
         symbols = self._simulation.config.symbols
         exchange = self._simulation.exchange
-        trades_by_instrument: dict[int, list[Message]] = {}
+        trades_by_instrument: dict[int, list[PublicTrade]] = {}
         for trade in changes.trades:
-            trades_by_instrument.setdefault(trade.instrument, []).append(
-                self.trade(trade).model_dump()
-            )
+            trades_by_instrument.setdefault(trade.instrument, []).append(trade)
         bars_by_instrument: dict[int, list[Bar]] = {}
         for bar in changes.bars:
             bars_by_instrument.setdefault(bar.instrument, []).append(bar)
@@ -538,8 +542,17 @@ class LiveSession:
             market = market_out(exchange, instrument, fmt, self.fundamental(instrument))
             updates.append(({"type": "market", **market.model_dump()}, symbol))
             if instrument in trades_by_instrument:
+                # Like bars: a jump in time can trade more than the tape keeps. Clients get
+                # the newest trades, each with its buyer and seller, and a count of the rest.
                 trades = trades_by_instrument[instrument]
-                updates.append(({"type": "trades", "symbol": symbol, "trades": trades}, symbol))
+                streamed = trades[-self._stream_trades :]
+                message = {
+                    "type": "trades",
+                    "symbol": symbol,
+                    "trades": [self.trade(trade).model_dump() for trade in streamed],
+                    "omitted": len(trades) - len(streamed),
+                }
+                updates.append((message, symbol))
         for instrument, bars in sorted(bars_by_instrument.items()):
             # A jump in simulated time (a step to the end, a fast runner tick) can close many
             # bars at once. Clients get the most recent ones and a count of the rest, which the
