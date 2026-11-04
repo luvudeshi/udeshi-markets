@@ -39,6 +39,8 @@ class Position:
     buy_notional: Fraction = Fraction(0)
     sell_notional: Fraction = Fraction(0)
     trades: int = 0
+    closing_trades: int = 0  # Fills that reduced the position.
+    winning_trades: int = 0  # Closing fills that realized a profit (> 0).
 
     @property
     def average_price(self) -> Fraction | None:
@@ -89,6 +91,9 @@ class Portfolio:
                 position.quantity = remaining if signed > 0 else -remaining
                 position.cost = unit * position.quantity
             position.realized += realized
+            position.closing_trades += 1
+            if realized > 0:
+                position.winning_trades += 1
         return realized
 
     def apply_self_trade(self, instrument: int, price: int, quantity: int) -> None:
@@ -129,6 +134,8 @@ class Portfolio:
             p.buy_notional,
             p.sell_notional,
             p.trades,
+            p.closing_trades,
+            p.winning_trades,
         )
 
     @property

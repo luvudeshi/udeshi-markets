@@ -95,6 +95,28 @@ class ChangeSet:
 
 
 @dataclass(frozen=True, slots=True)
+class OrderEvent:
+    """What an observer learns about one processed order: who sent it, what happened, and the
+    best bid and ask just before it reached the exchange (the prevailing quote its trades are
+    measured against)."""
+
+    time: int
+    participant_id: int
+    intent: OrderIntent
+    result: SubmitResult
+    bid_before: int | None
+    ask_before: int | None
+
+
+class SimulationObserver:
+    """A read-only listener for analytics (not a participant: it can see every order, but it
+    cannot act). Called synchronously, in processing order, after the order is booked."""
+
+    def on_order(self, event: OrderEvent) -> None:
+        """Called once for every order the exchange processes."""
+
+
+@dataclass(frozen=True, slots=True)
 class SimulationSummary:
     state: SimulationState
     time: int
@@ -278,6 +300,7 @@ class Simulation:
         self._participant_factory: ParticipantFactory = participants or tuple
         self._environment_factory = environment
         self._track_changes = track_changes
+        self._observers: list[SimulationObserver] = []
         self._build()
 
     # ---- Construction and lifecycle ------------------------------------------------------------
@@ -562,6 +585,10 @@ class Simulation:
     def environment(self) -> MarketEnvironment | None:
         return self._environment
 
+    def add_observer(self, observer: SimulationObserver) -> None:
+        """Registers a read-only observer of every processed order (kept across resets)."""
+        self._observers.append(observer)
+
     def portfolio(self, participant_id: int) -> PortfolioView:
         """A participant's portfolio, for observers such as the API (read-only)."""
         return PortfolioView(self._portfolios[participant_id])
@@ -661,6 +688,10 @@ class Simulation:
             self_trade_prevention=intent.self_trade_prevention,
             timestamp=self._now,
         )
+        bid_before = ask_before = None
+        if self._observers:
+            bid_before = self._exchange.best_bid(intent.instrument)
+            ask_before = self._exchange.best_ask(intent.instrument)
         result = self._exchange.submit(request)
         self._orders_submitted += 1
         if not result.accepted:
@@ -681,6 +712,10 @@ class Simulation:
             cancelled_quantity=result.cancelled_quantity,
         )
         self._notify_executions(result, intent)
+        if self._observers:
+            event = OrderEvent(self._now, participant_id, intent, result, bid_before, ask_before)
+            for observer in self._observers:
+                observer.on_order(event)
         owner = self._participants.get(participant_id)
         if owner is not None:
             ctx = self._contexts[participant_id]
